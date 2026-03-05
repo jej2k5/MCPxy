@@ -1,0 +1,26 @@
+{
+  "default_upstream": "git",
+  "auth": {
+    "token_env": "MCP_PROXY_TOKEN"
+  },
+  "admin": {
+    "mount_name": "admin",
+    "enabled": true,
+    "require_token": true,
+    "allowed_clients": ["127.0.0.1"]
+  },
+  "telemetry": {
+    "enabled": true,
+    "sink": "noop",
+    "batch_size": 50,
+    "flush_interval_ms": 2000,
+    "queue_size": 1000
+  },
+  "upstreams": {
+    "git": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["-m", "my_git_mcp_server"]
+    }
+  }
+}
