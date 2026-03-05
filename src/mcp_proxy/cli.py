@@ -36,7 +36,8 @@ def build_state(config_path: str) -> AppState:
 
     telemetry = TelemetryPipeline(
         sink=sink,
-        queue_size=config.telemetry.queue_size,
+        queue_max=config.telemetry.queue_max,
+        drop_policy=config.telemetry.drop_policy,
         batch_size=config.telemetry.batch_size,
         flush_interval_ms=config.telemetry.flush_interval_ms,
     )

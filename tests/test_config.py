@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from mcp_proxy.config import AppConfig, validate_config_payload
+from mcp_proxy.config import AppConfig, load_config, validate_config_payload
 from mcp_proxy.proxy.admin import AdminService
 from mcp_proxy.proxy.manager import PluginRegistry, UpstreamManager
 from mcp_proxy.runtime import RuntimeConfigManager
@@ -81,3 +81,40 @@ async def test_file_watcher_reload(tmp_path) -> None:
 
     await runtime.stop()
     await manager.stop()
+
+
+def test_telemetry_config_spec_fields_and_env_expansion(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("TELEM_ENDPOINT", "https://telemetry.example.com/ingest")
+    monkeypatch.setenv("TELEM_KEY", "abc123")
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "telemetry": {
+                    "sink": "http",
+                    "endpoint": "${env:TELEM_ENDPOINT}",
+                    "headers": {"X-Api-Key": "${env:TELEM_KEY}"},
+                    "queue_max": 5,
+                    "drop_policy": "drop_oldest",
+                },
+                "upstreams": {"a": {"type": "http", "url": "http://x"}},
+            }
+        )
+    )
+
+    cfg = load_config(config_path)
+    assert cfg.telemetry.endpoint == "https://telemetry.example.com/ingest"
+    assert cfg.telemetry.headers["X-Api-Key"] == "abc123"
+    assert cfg.telemetry.queue_max == 5
+    assert cfg.telemetry.drop_policy == "drop_oldest"
+
+
+def test_telemetry_config_rejects_invalid_spec_fields() -> None:
+    ok, err = validate_config_payload(
+        {
+            "telemetry": {"queue_max": 0, "drop_policy": "invalid"},
+            "upstreams": {"a": {"type": "http", "url": "http://x"}},
+        }
+    )
+    assert not ok
+    assert err

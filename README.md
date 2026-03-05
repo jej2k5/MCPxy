@@ -55,7 +55,8 @@ mcp-proxy --config config.json --host 127.0.0.1 --port 8080
     "headers": {"X-Api-Key": "${env:TELEM_KEY}"},
     "batch_size": 50,
     "flush_interval_ms": 2000,
-    "queue_size": 1000
+    "queue_max": 1000,
+    "drop_policy": "drop_newest"
   },
   "upstreams": {
     "git": {"type": "stdio", "command": "python", "args": ["-m", "my_git_mcp_server"]},

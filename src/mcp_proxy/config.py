@@ -37,9 +37,10 @@ class TelemetryConfig(BaseModel):
     sink: str = "noop"
     endpoint: str | None = None
     headers: dict[str, str] = Field(default_factory=dict)
-    batch_size: int = 50
-    flush_interval_ms: int = 2000
-    queue_size: int = 1000
+    batch_size: int = Field(default=50, strict=True, ge=1)
+    flush_interval_ms: int = Field(default=2000, strict=True, ge=1)
+    queue_max: int = Field(default=1000, strict=True, ge=1)
+    drop_policy: Literal["drop_oldest", "drop_newest"] = "drop_newest"
 
 
 class StdioUpstreamConfig(BaseModel):

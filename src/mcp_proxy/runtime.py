@@ -123,7 +123,8 @@ class RuntimeConfigManager:
 
         new_pipeline = TelemetryPipeline(
             sink=sink,
-            queue_size=next_config.telemetry.queue_size,
+            queue_max=next_config.telemetry.queue_max,
+            drop_policy=next_config.telemetry.drop_policy,
             batch_size=next_config.telemetry.batch_size,
             flush_interval_ms=next_config.telemetry.flush_interval_ms,
         )
