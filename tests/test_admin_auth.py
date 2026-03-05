@@ -22,7 +22,7 @@ def _build_client(require_token: bool = True):
     manager = UpstreamManager({}, PluginRegistry())
     bridge = ProxyBridge(manager)
     telemetry = TelemetryPipeline(NoopTelemetrySink())
-    app = create_app(AppState(config, config.model_dump(), manager, bridge, telemetry))
+    app = create_app(AppState(config, config.model_dump(), manager, bridge, telemetry, PluginRegistry()))
     return TestClient(app)
 
 

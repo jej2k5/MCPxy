@@ -4,20 +4,30 @@ from __future__ import annotations
 
 import inspect
 import logging
+from collections import deque
 from copy import deepcopy
 from typing import Any
 
-from mcp_proxy.config import AppConfig, redact_secrets, validate_config_payload
+from mcp_proxy.config import redact_secrets, validate_config_payload
+from mcp_proxy.runtime import RuntimeConfigManager
 
 
 class AdminService:
     """MCP admin service methods for runtime operations."""
 
-    def __init__(self, config: AppConfig, manager: Any, telemetry: Any, raw_config: dict[str, Any]) -> None:
-        self.config = config
+    def __init__(
+        self,
+        manager: Any,
+        telemetry: Any,
+        raw_config: dict[str, Any],
+        runtime_config: RuntimeConfigManager,
+        log_buffer: deque[dict[str, Any]] | None = None,
+    ) -> None:
         self.manager = manager
         self.telemetry = telemetry
         self.raw_config = raw_config
+        self.runtime_config = runtime_config
+        self.log_buffer = log_buffer or deque(maxlen=200)
 
     async def handle(self, message: dict[str, Any], health_provider: Any) -> dict[str, Any]:
         """Handle admin JSON-RPC request."""
@@ -34,6 +44,7 @@ class AdminService:
             "admin.set_log_level": self.set_log_level,
             "admin.send_telemetry": self.send_telemetry,
             "admin.get_health": lambda _params: health_provider(),
+            "admin.get_logs": self.get_logs,
         }
         fn = methods.get(method)
         if fn is None:
@@ -53,23 +64,12 @@ class AdminService:
         ok, error = validate_config_payload(candidate)
         return {"valid": ok, "error": error}
 
-    def apply_config(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def apply_config(self, params: dict[str, Any]) -> dict[str, Any]:
         candidate = params.get("config", {})
         dry_run = bool(params.get("dry_run", False))
-        ok, error = validate_config_payload(candidate)
-        if not ok:
-            return {"applied": False, "error": error, "rolled_back": True}
-        if dry_run:
-            return {"applied": False, "dry_run": True, "rolled_back": False}
-        backup = deepcopy(self.raw_config)
-        try:
-            self.raw_config.clear()
-            self.raw_config.update(candidate)
-            return {"applied": True, "rolled_back": False}
-        except Exception as exc:
-            self.raw_config.clear()
-            self.raw_config.update(backup)
-            return {"applied": False, "error": str(exc), "rolled_back": True}
+        result = await self.runtime_config.apply(candidate, dry_run=dry_run, source="admin.apply_config")
+        self.telemetry = self.runtime_config.telemetry
+        return result
 
     def list_upstreams(self, _params: dict[str, Any]) -> dict[str, Any]:
         return self.manager.health()
@@ -88,5 +88,15 @@ class AdminService:
 
     def send_telemetry(self, params: dict[str, Any]) -> dict[str, Any]:
         event = params.get("event", {})
-        enq = self.telemetry.emit_nowait({"source": "admin", **event})
+        enq = self.runtime_config.telemetry.emit_nowait({"source": "admin", **event})
         return {"enqueued": enq}
+
+    def get_logs(self, params: dict[str, Any]) -> list[dict[str, Any]]:
+        upstream = params.get("upstream")
+        level = params.get("level")
+        out = list(self.log_buffer)
+        if upstream:
+            out = [item for item in out if item.get("upstream") == upstream]
+        if level:
+            out = [item for item in out if item.get("level") == str(level).upper()]
+        return out
