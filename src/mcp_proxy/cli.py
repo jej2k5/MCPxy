@@ -10,10 +10,9 @@ import uvicorn
 
 from mcp_proxy.config import load_config
 from mcp_proxy.proxy.bridge import ProxyBridge
-from mcp_proxy.proxy.manager import PluginRegistry, UpstreamManager
+from mcp_proxy.plugins.registry import PluginRegistry
+from mcp_proxy.proxy.manager import UpstreamManager
 from mcp_proxy.server import AppState, create_app
-from mcp_proxy.telemetry.http_sink import HttpTelemetrySink
-from mcp_proxy.telemetry.noop_sink import NoopTelemetrySink
 from mcp_proxy.telemetry.pipeline import TelemetryPipeline
 
 
@@ -43,11 +42,8 @@ def build_state(config_path: str) -> AppState:
     bridge = ProxyBridge(manager)
 
     sink_name = config.telemetry.sink
-    sink_cls = registry.telemetry_sinks.get(sink_name)
-    if sink_cls is None:
-        sink = HttpTelemetrySink(config.telemetry.model_dump()) if sink_name == "http" else NoopTelemetrySink()
-    else:
-        sink = sink_cls(config.telemetry.model_dump()) if sink_name != "noop" else sink_cls()
+    sink_cls = registry.validate_telemetry_sink_type(sink_name)
+    sink = sink_cls() if sink_name == "noop" else sink_cls(config.telemetry.model_dump())
 
     telemetry = TelemetryPipeline(
         sink=sink,

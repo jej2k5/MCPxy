@@ -17,7 +17,8 @@ from mcp_proxy.config import AppConfig
 from mcp_proxy.jsonrpc import JsonRpcError, is_notification
 from mcp_proxy.proxy.admin import AdminService
 from mcp_proxy.proxy.bridge import ProxyBridge
-from mcp_proxy.proxy.manager import PluginRegistry, UpstreamManager
+from mcp_proxy.plugins.registry import PluginRegistry
+from mcp_proxy.proxy.manager import UpstreamManager
 from mcp_proxy.routing import resolve_upstream
 from mcp_proxy.runtime import RuntimeConfigManager
 from mcp_proxy.telemetry.pipeline import TelemetryPipeline

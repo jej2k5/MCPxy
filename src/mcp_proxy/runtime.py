@@ -11,9 +11,8 @@ from pathlib import Path
 from typing import Any
 
 from mcp_proxy.config import AppConfig, validate_config_payload
-from mcp_proxy.proxy.manager import PluginRegistry, UpstreamManager
-from mcp_proxy.telemetry.http_sink import HttpTelemetrySink
-from mcp_proxy.telemetry.noop_sink import NoopTelemetrySink
+from mcp_proxy.plugins.registry import PluginRegistry
+from mcp_proxy.proxy.manager import UpstreamManager
 from mcp_proxy.telemetry.pipeline import TelemetryPipeline
 
 logger = logging.getLogger(__name__)
@@ -115,11 +114,8 @@ class RuntimeConfigManager:
             return
         await self.telemetry.stop()
         sink_name = next_config.telemetry.sink
-        sink_cls = self.registry.telemetry_sinks.get(sink_name)
-        if sink_cls is None:
-            sink = HttpTelemetrySink(next_config.telemetry.model_dump()) if sink_name == "http" else NoopTelemetrySink()
-        else:
-            sink = sink_cls(next_config.telemetry.model_dump()) if sink_name != "noop" else sink_cls()
+        sink_cls = self.registry.validate_telemetry_sink_type(sink_name)
+        sink = sink_cls() if sink_name == "noop" else sink_cls(next_config.telemetry.model_dump())
 
         new_pipeline = TelemetryPipeline(
             sink=sink,
