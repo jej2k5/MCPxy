@@ -10,6 +10,15 @@ MCPy Proxy multiplexes requests to heterogeneous upstream MCP servers (stdio and
 
 Model Context Protocol (MCP) is a protocol for tool/server interoperability. In this project, messages are handled as **JSON-RPC 2.0 over UTF-8 JSON**.
 
+### Request/Response Streaming Semantics
+
+- `/mcp` accepts either `application/json` (single or batch payload) or `application/x-ndjson` (one JSON-RPC message per line).
+- Incoming request bodies are parsed incrementally; each message is processed in arrival order.
+- Responses are emitted as NDJSON chunks as soon as each request completes (no buffering until the full batch finishes).
+- JSON-RPC correlation is preserved by emitting each upstream/admin response with the original request `id`.
+- Ordering is explicit and stable: messages are forwarded sequentially and responses are returned in the same sequence they are processed.
+- Notification-only requests (no `id` values) produce no response body and return HTTP `202 Accepted`.
+
 ## Why This Proxy Exists
 
 - Consolidate many MCP servers behind one endpoint.

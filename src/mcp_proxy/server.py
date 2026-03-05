@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from codecs import getincrementaldecoder
 import asyncio
 from collections import deque
 from pathlib import Path
@@ -73,12 +74,10 @@ class AppState:
         )
 
 
-def _parse_ndjson(body: bytes) -> list[dict[str, Any]]:
-    messages: list[dict[str, Any]] = []
-    for line in body.decode("utf-8").splitlines():
-        if line.strip():
-            messages.append(json.loads(line))
-    return messages
+def _decode_message(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        raise ValueError("JSON-RPC payload must be an object")
+    return raw
 
 
 def _get_bearer(request: Request) -> str | None:
@@ -117,19 +116,89 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
             if expected and _get_bearer(request) != expected:
                 raise HTTPException(status_code=401, detail="unauthorized")
 
-    async def parse_messages(request: Request) -> list[dict[str, Any]]:
+    async def parse_messages(request: Request) -> AsyncIterator[dict[str, Any]]:
         ctype = (request.headers.get("content-type") or "").split(";")[0].strip()
-        body = await request.body()
         if ctype == "application/x-ndjson":
-            return _parse_ndjson(body)
-        parsed = json.loads(body.decode("utf-8"))
-        if isinstance(parsed, list):
-            return parsed
-        return [parsed]
+            decoder = getincrementaldecoder("utf-8")()
+            pending = ""
+            async for chunk in request.stream():
+                pending += decoder.decode(chunk)
+                lines = pending.split("\n")
+                pending = lines.pop()
+                for line in lines:
+                    if line.strip():
+                        yield _decode_message(json.loads(line))
+            pending += decoder.decode(b"", final=True)
+            if pending.strip():
+                yield _decode_message(json.loads(pending))
+            return
 
-    async def stream_responses(responses: list[dict[str, Any]]) -> AsyncIterator[bytes]:
-        for item in responses:
-            yield (json.dumps(item) + "\n").encode("utf-8")
+        decoder = getincrementaldecoder("utf-8")()
+        parser = json.JSONDecoder()
+        mode = "unknown"
+        cursor = 0
+        buffer = ""
+
+        async for chunk in request.stream():
+            buffer += decoder.decode(chunk)
+            while True:
+                while cursor < len(buffer) and buffer[cursor].isspace():
+                    cursor += 1
+
+                if mode == "unknown":
+                    if cursor >= len(buffer):
+                        break
+                    if buffer[cursor] == "[":
+                        mode = "array"
+                        cursor += 1
+                        continue
+                    mode = "single"
+
+                if mode == "array":
+                    if cursor >= len(buffer):
+                        break
+                    if buffer[cursor] == "]":
+                        mode = "done"
+                        cursor += 1
+                        continue
+                    if buffer[cursor] == ",":
+                        cursor += 1
+                        continue
+
+                if mode == "done":
+                    while cursor < len(buffer) and buffer[cursor].isspace():
+                        cursor += 1
+                    if cursor < len(buffer):
+                        raise ValueError("Trailing data after JSON payload")
+                    break
+
+                try:
+                    parsed, end = parser.raw_decode(buffer, cursor)
+                except json.JSONDecodeError:
+                    break
+
+                if mode == "single":
+                    if isinstance(parsed, list):
+                        for item in parsed:
+                            yield _decode_message(item)
+                    else:
+                        yield _decode_message(parsed)
+                    cursor = end
+                    mode = "done"
+                    continue
+
+                yield _decode_message(parsed)
+                cursor = end
+
+            if cursor > 0 and cursor >= len(buffer):
+                buffer = ""
+                cursor = 0
+
+        buffer += decoder.decode(b"", final=True)
+        while cursor < len(buffer) and buffer[cursor].isspace():
+            cursor += 1
+        if mode in {"unknown", "single", "array"} and cursor < len(buffer):
+            raise ValueError("Incomplete JSON payload")
 
     async def call_admin_method(method: str, params: dict[str, Any]) -> Any:
         response = await admin_service.handle({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}, lambda: build_health())
@@ -139,33 +208,40 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
 
     async def handle_proxy(request: Request, path_name: str | None, x_mcp_upstream: str | None) -> Response:
         require_auth_if_needed(request)
-        messages = await parse_messages(request)
-        responses: list[dict[str, Any]] = []
+        async def iter_response_lines() -> AsyncIterator[bytes]:
+            async for msg in parse_messages(request):
+                upstream, cleaned = resolve_upstream(msg, state.runtime_config.config, path_name, x_mcp_upstream)
+                if state.runtime_config.config.admin.enabled and upstream == state.runtime_config.config.admin.mount_name:
+                    require_admin_auth(request)
+                    resp = await admin_service.handle(cleaned, lambda: build_health())
+                    if not is_notification(msg):
+                        yield (json.dumps(resp) + "\n").encode("utf-8")
+                    continue
+                if upstream is None:
+                    if not is_notification(msg):
+                        err = JsonRpcError(-32602, "upstream_not_resolved", request_id=msg.get("id")).to_response()
+                        yield (json.dumps(err) + "\n").encode("utf-8")
+                    continue
+                try:
+                    out = await state.bridge.forward(upstream, cleaned)
+                    if out is not None:
+                        yield (json.dumps(out) + "\n").encode("utf-8")
+                except JsonRpcError as exc:
+                    if not is_notification(msg):
+                        yield (json.dumps(exc.to_response()) + "\n").encode("utf-8")
 
-        for msg in messages:
-            upstream, cleaned = resolve_upstream(msg, state.runtime_config.config, path_name, x_mcp_upstream)
-            if state.runtime_config.config.admin.enabled and upstream == state.runtime_config.config.admin.mount_name:
-                require_admin_auth(request)
-                resp = await admin_service.handle(cleaned, lambda: build_health())
-                if not is_notification(msg):
-                    responses.append(resp)
-                continue
-            if upstream is None:
-                err = JsonRpcError(-32602, "upstream_not_resolved", request_id=msg.get("id")).to_response()
-                if not is_notification(msg):
-                    responses.append(err)
-                continue
-            try:
-                out = await state.bridge.forward(upstream, cleaned)
-                if out is not None:
-                    responses.append(out)
-            except JsonRpcError as exc:
-                if not is_notification(msg):
-                    responses.append(exc.to_response())
-
-        if not responses:
+        iterator = iter_response_lines()
+        try:
+            first = await anext(iterator)
+        except StopAsyncIteration:
             return Response(status_code=202)
-        return StreamingResponse(stream_responses(responses), media_type="application/x-ndjson")
+
+        async def with_first() -> AsyncIterator[bytes]:
+            yield first
+            async for chunk in iterator:
+                yield chunk
+
+        return StreamingResponse(with_first(), media_type="application/x-ndjson")
 
     def build_health() -> dict[str, Any]:
         return {
