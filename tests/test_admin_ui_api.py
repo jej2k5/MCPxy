@@ -14,7 +14,7 @@ def _client():
     config = AppConfig.model_validate(
         {
             "auth": {"token_env": "MCP_PROXY_TOKEN"},
-            "admin": {"enabled": True, "mount_name": "admin", "require_token": True, "allowed_clients": ["testclient"]},
+            "admin": {"enabled": True, "mount_name": "__admin__", "require_token": True, "allowed_clients": ["testclient"]},
             "upstreams": {"a": {"type": "http", "url": "http://example"}},
         }
     )

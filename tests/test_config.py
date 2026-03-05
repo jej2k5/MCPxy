@@ -118,3 +118,8 @@ def test_telemetry_config_rejects_invalid_spec_fields() -> None:
     )
     assert not ok
     assert err
+
+
+def test_admin_mount_name_default() -> None:
+    cfg = AppConfig.model_validate({"upstreams": {}})
+    assert cfg.admin.mount_name == "__admin__"

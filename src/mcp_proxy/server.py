@@ -115,7 +115,9 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
         if admin.require_token:
             token_env = state.runtime_config.config.auth.token_env
             expected = __import__("os").getenv(token_env) if token_env else None
-            if expected and _get_bearer(request) != expected:
+            if not expected:
+                raise HTTPException(status_code=500, detail="admin_token_not_configured")
+            if _get_bearer(request) != expected:
                 raise HTTPException(status_code=401, detail="unauthorized")
 
     async def parse_messages(request: Request) -> AsyncIterator[dict[str, Any]]:
@@ -212,8 +214,17 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
         require_auth_if_needed(request)
         async def iter_response_lines() -> AsyncIterator[bytes]:
             async for msg in parse_messages(request):
+                admin = state.runtime_config.config.admin
+                params = msg.get("params")
+                in_band_upstream = params.get("mcp_upstream") if isinstance(params, dict) else None
+                is_admin_target = admin.enabled and (
+                    path_name == admin.mount_name
+                    or x_mcp_upstream == admin.mount_name
+                    or in_band_upstream == admin.mount_name
+                )
+
                 upstream, cleaned = resolve_upstream(msg, state.runtime_config.config, path_name, x_mcp_upstream)
-                if state.runtime_config.config.admin.enabled and upstream == state.runtime_config.config.admin.mount_name:
+                if is_admin_target:
                     require_admin_auth(request)
                     resp = await admin_service.handle(cleaned, lambda: build_health())
                     if not is_notification(msg):

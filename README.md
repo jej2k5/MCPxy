@@ -31,7 +31,7 @@ Model Context Protocol (MCP) is a protocol for tool/server interoperability. In 
 - **FastAPI server** handling `/mcp`, `/mcp/{name}`, `/health`.
 - **Routing engine** with precedence: path > header > in-band > default.
 - **Upstream manager** for plugin-based transport instances.
-- **Admin MCP handler** mounted as `/mcp/admin` by default.
+- **Admin MCP handler** mounted as `/mcp/__admin__` by default.
 - **Telemetry pipeline** with bounded queue + sink plugins.
 - **Plugin registry** loading built-ins and Python entry points.
 
@@ -52,7 +52,7 @@ mcp-proxy serve --config config.json --listen 127.0.0.1:8000
   "default_upstream": "git",
   "auth": {"token_env": "MCP_PROXY_TOKEN"},
   "admin": {
-    "mount_name": "admin",
+    "mount_name": "__admin__",
     "enabled": true,
     "require_token": true,
     "allowed_clients": ["127.0.0.1"]
@@ -76,7 +76,7 @@ mcp-proxy serve --config config.json --listen 127.0.0.1:8000
 
 ## Admin MCP Interface
 
-Mounted under `/mcp/{admin.mount_name}` (default `/mcp/admin`).
+Mounted under `/mcp/{admin.mount_name}` (default `/mcp/__admin__`).
 
 Methods:
 - `admin.get_config`
@@ -113,7 +113,7 @@ Browser (/admin)
 
 ### Access and Security
 
-- `/admin` and `/admin/api/*` enforce the same token and `allowed_clients` rules as `/mcp/admin`.
+- `/admin` and `/admin/api/*` enforce the same token and `allowed_clients` rules as `/mcp/__admin__`.
 - Secrets are redacted from returned config payloads.
 - Public read-only status is exposed at `/status` (no authentication).
 
@@ -146,7 +146,7 @@ Built-ins are registered by default and can be overridden by external plugins in
 
 - Default bind host: `127.0.0.1`.
 - Optional bearer auth via `auth.token_env`.
-- Admin supports token requirement + client IP allowlist.
+- Admin supports token requirement + client IP allowlist, and fails closed when `admin.require_token=true` but the expected token is not configured.
 - Secret values are redacted in admin responses.
 - Authorization headers are never logged.
 

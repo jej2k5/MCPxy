@@ -24,7 +24,7 @@ class AuthConfig(BaseModel):
 class AdminConfig(BaseModel):
     """Admin MCP endpoint settings."""
 
-    mount_name: str = "admin"
+    mount_name: str = "__admin__"
     enabled: bool = True
     require_token: bool = True
     allowed_clients: list[str] = Field(default_factory=list)
