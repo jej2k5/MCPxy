@@ -46,9 +46,23 @@ class StdioUpstreamTransport(UpstreamTransport):
             self._reader_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._reader_task
+            self._reader_task = None
+
+        self._flush_pending()
+
+        if self._proc and self._proc.stdin:
+            self._proc.stdin.close()
+            with contextlib.suppress(Exception):
+                await self._proc.stdin.wait_closed()
+
         if self._proc and self._proc.returncode is None:
             self._proc.terminate()
-            await self._proc.wait()
+            try:
+                await asyncio.wait_for(self._proc.wait(), timeout=1.0)
+            except TimeoutError:
+                self._proc.kill()
+                await self._proc.wait()
+        self._proc = None
 
     async def restart(self) -> None:
         await self.stop()
@@ -67,10 +81,7 @@ class StdioUpstreamTransport(UpstreamTransport):
         while self._running and self._proc and self._proc.stdout:
             line = await self._proc.stdout.readline()
             if not line:
-                for fut in self._pending.values():
-                    if not fut.done():
-                        fut.set_result(None)
-                self._pending.clear()
+                self._flush_pending()
                 await self._maybe_restart()
                 return
             msg = json.loads(line.decode("utf-8"))
@@ -79,6 +90,12 @@ class StdioUpstreamTransport(UpstreamTransport):
                 fut = self._pending.pop(msg_id)
                 if not fut.done():
                     fut.set_result(msg)
+
+    def _flush_pending(self) -> None:
+        for fut in self._pending.values():
+            if not fut.done():
+                fut.set_result(None)
+        self._pending.clear()
 
     async def request(self, message: dict[str, Any]) -> dict[str, Any] | None:
         if not self._proc or not self._proc.stdin:

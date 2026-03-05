@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import signal
 import time
 from collections import deque
 from pathlib import Path
@@ -94,6 +95,7 @@ def create_app(state: AppState) -> FastAPI:
     """Create configured FastAPI app."""
     app = FastAPI(title="MCPy Proxy")
     admin_service = AdminService(state.manager, state.telemetry, state.raw_config, state.runtime_config, state.log_buffer)
+    state.bridge.set_telemetry_emitter(state.runtime_config.telemetry.emit_nowait)
 
     root_logger = logging.getLogger()
     root_logger.addHandler(InMemoryLogHandler(state.log_buffer))
@@ -174,8 +176,27 @@ def create_app(state: AppState) -> FastAPI:
             "version": "0.1.0",
         }
 
+    def handle_shutdown_signal(signum: int, _frame: Any | None = None) -> None:
+        state.bridge.start_shutdown()
+        state.runtime_config.telemetry.emit_nowait(
+            {
+                "event": "proxy_shutdown_signal",
+                "signal": signal.Signals(signum).name,
+            }
+        )
+
+    def install_signal_handlers() -> None:
+        try:
+            signal.signal(signal.SIGINT, handle_shutdown_signal)
+            signal.signal(signal.SIGTERM, handle_shutdown_signal)
+        except ValueError:
+            return
+
+    app.state.handle_shutdown_signal = handle_shutdown_signal
+
     @app.on_event("startup")
     async def on_startup() -> None:
+        install_signal_handlers()
         await state.manager.start()
         await state.runtime_config.telemetry.start()
         state.runtime_config.telemetry.emit_nowait({"event": "proxy_startup"})
@@ -183,8 +204,11 @@ def create_app(state: AppState) -> FastAPI:
 
     @app.on_event("shutdown")
     async def on_shutdown() -> None:
+        state.bridge.start_shutdown()
+        state.runtime_config.telemetry.emit_nowait({"event": "proxy_shutdown_start"})
         await state.runtime_config.stop()
         await state.manager.stop()
+        state.runtime_config.telemetry.emit_nowait({"event": "proxy_shutdown_complete"})
         await state.runtime_config.telemetry.stop()
 
     @app.post("/mcp")

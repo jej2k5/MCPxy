@@ -36,7 +36,7 @@ class TelemetryPipeline:
         self._running = False
         if self._task:
             self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
+            with contextlib.suppress(Exception):
                 await self._task
         await self.sink.stop()
 
