@@ -40,7 +40,7 @@ def build_state(config_path: str) -> AppState:
         batch_size=config.telemetry.batch_size,
         flush_interval_ms=config.telemetry.flush_interval_ms,
     )
-    return AppState(config, raw_config, manager, bridge, telemetry)
+    return AppState(config, raw_config, manager, bridge, telemetry, registry=registry, config_path=config_path)
 
 
 def main() -> None:

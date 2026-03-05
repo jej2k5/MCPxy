@@ -80,6 +80,42 @@ Methods:
 
 Admin requests are never forwarded to external upstreams.
 
+
+## Admin Web UI
+
+A lightweight admin UI is available at `/admin` and is auto-generated from the same admin MCP method surface (via internal `/admin/api/*` helper endpoints that proxy to admin MCP methods).
+
+- Dashboard: upstream status, request/error metrics, telemetry status
+- Upstream management: list + restart + health checks
+- Config editor: view/edit JSON, validate, diff preview (`dry_run`), apply
+- Telemetry panel: queue health + test event emission
+- Logs viewer: recent structured logs with severity/upstream filters
+
+### Admin UI Architecture (diagram)
+
+```text
+Browser (/admin)
+   -> JS calls /admin/api/*
+   -> FastAPI admin helper endpoints
+   -> AdminService (MCP methods)
+   -> RuntimeConfigManager / UpstreamManager / TelemetryPipeline
+```
+
+### Access and Security
+
+- `/admin` and `/admin/api/*` enforce the same token and `allowed_clients` rules as `/mcp/admin`.
+- Secrets are redacted from returned config payloads.
+- Public read-only status is exposed at `/status` (no authentication).
+
+## Hot Reload
+
+Runtime config updates are supported without process restart through:
+
+1. `admin.apply_config`
+2. Config file watcher when `--config` is used
+
+Both paths use the same validation + diff + apply pipeline with rollback-on-failure semantics.
+
 ## Telemetry
 
 - Non-blocking enqueue from request path.
