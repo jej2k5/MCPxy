@@ -38,6 +38,7 @@ dev = [
 ]
 
 [project.scripts]
+# CLI usage: mcp-proxy serve --config <path> --listen <host:port>
 mcp-proxy = "mcp_proxy.cli:main"
 
 [project.entry-points."mcp_proxy.upstreams"]

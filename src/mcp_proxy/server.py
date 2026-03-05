@@ -6,6 +6,7 @@ import json
 import logging
 import time
 from codecs import getincrementaldecoder
+import asyncio
 from collections import deque
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -17,7 +18,8 @@ from mcp_proxy.config import AppConfig
 from mcp_proxy.jsonrpc import JsonRpcError, is_notification
 from mcp_proxy.proxy.admin import AdminService
 from mcp_proxy.proxy.bridge import ProxyBridge
-from mcp_proxy.proxy.manager import PluginRegistry, UpstreamManager
+from mcp_proxy.plugins.registry import PluginRegistry
+from mcp_proxy.proxy.manager import UpstreamManager
 from mcp_proxy.routing import resolve_upstream
 from mcp_proxy.runtime import RuntimeConfigManager
 from mcp_proxy.telemetry.pipeline import TelemetryPipeline
@@ -89,7 +91,7 @@ def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-def create_app(state: AppState) -> FastAPI:
+def create_app(state: AppState, health_path: str = "/health", request_timeout_s: float = 30.0) -> FastAPI:
     """Create configured FastAPI app."""
     app = FastAPI(title="MCPy Proxy")
     admin_service = AdminService(state.manager, state.telemetry, state.raw_config, state.runtime_config, state.log_buffer)
@@ -263,15 +265,21 @@ def create_app(state: AppState) -> FastAPI:
         await state.manager.stop()
         await state.runtime_config.telemetry.stop()
 
+    async def handle_proxy_with_timeout(request: Request, path_name: str | None, x_mcp_upstream: str | None) -> Response:
+        try:
+            return await asyncio.wait_for(handle_proxy(request, path_name, x_mcp_upstream), timeout=request_timeout_s)
+        except TimeoutError:
+            return JSONResponse({"error": "request_timeout"}, status_code=504)
+
     @app.post("/mcp")
     async def post_mcp(request: Request, x_mcp_upstream: str | None = Header(default=None)) -> Response:
-        return await handle_proxy(request, None, x_mcp_upstream)
+        return await handle_proxy_with_timeout(request, None, x_mcp_upstream)
 
     @app.post("/mcp/{name}")
     async def post_mcp_named(name: str, request: Request, x_mcp_upstream: str | None = Header(default=None)) -> Response:
-        return await handle_proxy(request, name, x_mcp_upstream)
+        return await handle_proxy_with_timeout(request, name, x_mcp_upstream)
 
-    @app.get("/health")
+    @app.get(health_path)
     async def health() -> JSONResponse:
         return JSONResponse(build_health())
 

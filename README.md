@@ -42,7 +42,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e .[dev]
 cp config.example.json config.json
-mcp-proxy --config config.json --host 127.0.0.1 --port 8080
+mcp-proxy serve --config config.json --listen 127.0.0.1:8000
 ```
 
 ## Configuration Examples
