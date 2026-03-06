@@ -13,7 +13,8 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 from fastapi import FastAPI, Header, HTTPException, Request, Response
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from mcp_proxy.config import AppConfig
 from mcp_proxy.jsonrpc import JsonRpcError, is_notification
@@ -272,6 +273,9 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
 
     app.state.handle_shutdown_signal = handle_shutdown_signal
 
+    web_root = Path(__file__).parent / "web"
+    app.mount("/admin/static", StaticFiles(directory=str(web_root / "static")), name="admin-static")
+
     @app.on_event("startup")
     async def on_startup() -> None:
         install_signal_handlers()
@@ -312,10 +316,10 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
         data = build_health()
         return JSONResponse({"upstreams": data["upstreams"], "uptime_s": data["uptime_s"], "version": data["version"]})
 
-    @app.get("/admin")
-    async def admin_index(request: Request) -> FileResponse:
+    @app.get("/admin", response_class=HTMLResponse)
+    async def admin_index(request: Request) -> HTMLResponse:
         require_admin_auth(request)
-        return FileResponse(Path(__file__).parent / "static" / "admin" / "index.html")
+        return HTMLResponse((web_root / "templates" / "admin.html").read_text(encoding="utf-8"))
 
     @app.get("/admin/api/config")
     async def admin_api_config(request: Request) -> JSONResponse:

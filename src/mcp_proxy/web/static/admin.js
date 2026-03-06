@@ -1,20 +1,3 @@
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>MCPy Admin</title>
-  <style>body{font-family:Arial,sans-serif;margin:20px}textarea{width:100%;height:200px}pre{background:#f4f4f4;padding:8px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}</style>
-</head>
-<body>
-  <h1>MCPy Admin</h1>
-  <div class="grid">
-    <section><h2>Dashboard</h2><pre id="dashboard"></pre></section>
-    <section><h2>Telemetry</h2><pre id="telemetry"></pre><button onclick="sendTelemetry()">Send test telemetry</button></section>
-  </div>
-  <section><h2>Upstreams</h2><pre id="upstreams"></pre><input id="restartName" placeholder="upstream" /><button onclick="restartUpstream()">Restart</button></section>
-  <section><h2>Configuration</h2><textarea id="configEditor"></textarea><br/><button onclick="validateConfig()">Validate</button><button onclick="previewDiff()">Diff Preview</button><button onclick="applyConfig()">Apply</button><pre id="configResult"></pre></section>
-  <section><h2>Logs</h2><input id="logLevel" placeholder="level"/><input id="logUpstream" placeholder="upstream"/><button onclick="loadLogs()">Filter</button><pre id="logs"></pre></section>
-<script>
 async function jget(url){const r=await fetch(url,{headers:{'Accept':'application/json'}});return r.json();}
 async function jpost(url,body){const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});return r.json();}
 async function refresh(){
@@ -32,6 +15,3 @@ async function restartUpstream(){const name=document.getElementById('restartName
 async function sendTelemetry(){const out=await jpost('/admin/api/telemetry',{event:{event:'test_from_ui'}});alert(JSON.stringify(out));refresh();}
 async function loadLogs(){const level=document.getElementById('logLevel').value; const upstream=document.getElementById('logUpstream').value;const q=new URLSearchParams();if(level)q.set('level',level);if(upstream)q.set('upstream',upstream);const out=await jget('/admin/api/logs?'+q.toString());document.getElementById('logs').textContent=JSON.stringify(out,null,2)}
 refresh();
-</script>
-</body>
-</html>

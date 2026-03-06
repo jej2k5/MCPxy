@@ -35,6 +35,15 @@ Model Context Protocol (MCP) is a protocol for tool/server interoperability. In 
 - **Telemetry pipeline** with bounded queue + sink plugins.
 - **Plugin registry** loading built-ins and Python entry points.
 
+
+## Repository Layout
+
+- Design notes: `docs/Design.md`
+- Plugin registry: `src/mcp_proxy/plugins/registry.py`
+- Admin web template: `src/mcp_proxy/web/templates/admin.html`
+- Admin web static assets: `src/mcp_proxy/web/static/admin.css`, `src/mcp_proxy/web/static/admin.js`
+- Behavior tests: `tests/test_routing_precedence.py`, `tests/test_admin_auth.py`, `tests/test_atomic_apply_rollback.py`, `tests/test_redaction.py`, `tests/test_plugin_discovery.py`, `tests/test_telemetry_queue_flush.py`, `tests/test_stdio_restart.py`, `tests/test_overload_handling.py`, `tests/test_hot_reload.py`, `tests/test_admin_ui_auth.py`
+
 ## Quick Start
 
 ```bash
@@ -42,7 +51,7 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e .[dev]
 cp config.example.json config.json
-mcp-proxy serve --config config.json --listen 127.0.0.1:8000
+mcp-proxy --config config.json
 ```
 
 ## Configuration Examples

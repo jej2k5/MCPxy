@@ -18,6 +18,28 @@
 pytest
 ```
 
+
+## Required Paths
+
+Keep these paths stable when editing architecture and admin UI assets:
+- `docs/Design.md`
+- `src/mcp_proxy/plugins/registry.py`
+- `src/mcp_proxy/web/templates/admin.html`
+- `src/mcp_proxy/web/static/admin.css`
+- `src/mcp_proxy/web/static/admin.js`
+
+## Targeted Test Commands
+
+Run behavior tests explicitly:
+```bash
+pytest tests/test_routing_precedence.py tests/test_admin_auth.py tests/test_atomic_apply_rollback.py tests/test_redaction.py tests/test_plugin_discovery.py tests/test_telemetry_queue_flush.py tests/test_stdio_restart.py tests/test_overload_handling.py tests/test_hot_reload.py tests/test_admin_ui_auth.py
+```
+
+Run the full suite before opening a PR:
+```bash
+pytest
+```
+
 ## Code Style Guidelines
 
 - Python 3.11+.

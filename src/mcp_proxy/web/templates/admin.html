@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>MCPy Admin</title>
+  <link rel="stylesheet" href="/admin/static/admin.css" />
+</head>
+<body>
+  <h1>MCPy Admin</h1>
+  <div class="grid">
+    <section><h2>Dashboard</h2><pre id="dashboard"></pre></section>
+    <section><h2>Telemetry</h2><pre id="telemetry"></pre><button onclick="sendTelemetry()">Send test telemetry</button></section>
+  </div>
+  <section><h2>Upstreams</h2><pre id="upstreams"></pre><input id="restartName" placeholder="upstream" /><button onclick="restartUpstream()">Restart</button></section>
+  <section><h2>Configuration</h2><textarea id="configEditor"></textarea><br/><button onclick="validateConfig()">Validate</button><button onclick="previewDiff()">Diff Preview</button><button onclick="applyConfig()">Apply</button><pre id="configResult"></pre></section>
+  <section><h2>Logs</h2><input id="logLevel" placeholder="level"/><input id="logUpstream" placeholder="upstream"/><button onclick="loadLogs()">Filter</button><pre id="logs"></pre></section>
+  <script src="/admin/static/admin.js"></script>
+</body>
+</html>
