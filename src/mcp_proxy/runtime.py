@@ -8,9 +8,15 @@ import json
 import logging
 from copy import deepcopy
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from mcp_proxy.config import AppConfig, validate_config_payload
+from mcp_proxy.config import (
+    AppConfig,
+    SecretResolver,
+    _apply_expansions,
+    find_secret_references,
+    validate_config_payload,
+)
 from mcp_proxy.plugins.registry import PluginRegistry
 from mcp_proxy.policy.engine import PolicyEngine
 from mcp_proxy.proxy.manager import UpstreamManager
@@ -32,6 +38,8 @@ class RuntimeConfigManager:
         config_path: str | None = None,
         poll_interval_s: float = 0.5,
         policy_engine: PolicyEngine | None = None,
+        secrets_resolver: SecretResolver | None = None,
+        on_config_applied: Callable[[AppConfig], None] | None = None,
     ) -> None:
         self.raw_config = raw_config
         self.config = config
@@ -41,6 +49,15 @@ class RuntimeConfigManager:
         self.config_path = config_path
         self.poll_interval_s = poll_interval_s
         self.policy_engine = policy_engine
+        # Resolver for ${secret:NAME} placeholders used at apply time. The
+        # server's AppState wires this to SecretsManager.get; tests and
+        # simple call sites can leave it None and lose only secret support.
+        self.secrets_resolver = secrets_resolver
+        # Optional post-apply hook: called with the *new* AppConfig after
+        # a successful apply. Used by AppState to sync dependent state
+        # (e.g. OAuthManager upstream registrations) without needing the
+        # runtime manager to know about auth.
+        self.on_config_applied: Callable[[AppConfig], None] | None = on_config_applied
         self._lock = asyncio.Lock()
         self._watch_task: asyncio.Task[None] | None = None
         self._last_mtime_ns: int | None = None
@@ -82,11 +99,33 @@ class RuntimeConfigManager:
                 logger.info("Config reload applied via file watcher")
 
     async def apply(self, candidate: dict[str, Any], dry_run: bool = False, source: str = "admin") -> dict[str, Any]:
-        ok, error = validate_config_payload(candidate)
+        # Fail fast on unresolved ${secret:NAME} references: the expansion
+        # layer would otherwise silently substitute an empty string, which
+        # turns into a very confusing "my upstream just rejects all
+        # requests" bug far away from this call site.
+        if self.secrets_resolver is not None:
+            missing: list[str] = []
+            for name in find_secret_references(candidate):
+                if self.secrets_resolver(name) is None:
+                    missing.append(name)
+            if missing:
+                return {
+                    "applied": False,
+                    "error": (
+                        "missing secret(s): "
+                        + ", ".join(missing)
+                        + ". Create them via POST /admin/api/secrets "
+                          "before applying this config."
+                    ),
+                    "rolled_back": True,
+                }
+
+        ok, error = validate_config_payload(candidate, secrets=self.secrets_resolver)
         if not ok:
             return {"applied": False, "error": error, "rolled_back": True}
 
-        next_config = AppConfig.model_validate(deepcopy(candidate))
+        expanded = _apply_expansions(deepcopy(candidate), secrets=self.secrets_resolver)
+        next_config = AppConfig.model_validate(expanded)
         diff = self._compute_diff(self.config, next_config)
         if dry_run:
             return {"applied": False, "dry_run": True, "rolled_back": False, "diff": diff}
@@ -104,6 +143,13 @@ class RuntimeConfigManager:
                 self.config = next_config
                 if self.policy_engine is not None:
                     self.policy_engine.replace_config(next_config)
+                if self.on_config_applied is not None:
+                    try:
+                        self.on_config_applied(next_config)
+                    except Exception as exc:  # pragma: no cover - defensive
+                        logger.warning(
+                            "on_config_applied hook raised: %s", exc
+                        )
                 diff["upstreams"] = upstream_diff
                 diff["policies_changed"] = backup_config.policies != next_config.policies
                 return {"applied": True, "rolled_back": False, "diff": diff, "source": source}

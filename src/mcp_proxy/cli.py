@@ -12,6 +12,7 @@ from typing import Any
 
 import uvicorn
 
+from mcp_proxy.auth.oauth import OAuthManager
 from mcp_proxy.config import load_config
 from mcp_proxy.discovery.catalog import load_catalog
 from mcp_proxy.discovery.importers import IMPORTERS, discover_all, get_importer
@@ -19,6 +20,7 @@ from mcp_proxy.install.clients import InstallOptions, get_adapter, list_clients
 from mcp_proxy.proxy.bridge import ProxyBridge
 from mcp_proxy.plugins.registry import PluginRegistry
 from mcp_proxy.proxy.manager import UpstreamManager
+from mcp_proxy.secrets import SecretsManager
 from mcp_proxy.server import AppState, create_app
 from mcp_proxy.stdio_adapter import run_stdio_adapter
 from mcp_proxy.telemetry.pipeline import TelemetryPipeline
@@ -41,12 +43,23 @@ def parse_listen(value: str) -> tuple[str, int]:
 def build_state(config_path: str) -> AppState:
     """Build app state from config file."""
     raw_config = json.loads(open(config_path, "r", encoding="utf-8").read())
-    config = load_config(config_path)
+
+    # Secrets manager is constructed first so ${secret:NAME} placeholders in
+    # the config file expand correctly. State dir is picked from
+    # MCPY_STATE_DIR with sane defaults (/var/lib/mcpy in the container,
+    # ~/.local/state/mcpy in local dev) — deployment concern, not config.
+    state_dir_override = __import__("os").getenv("MCPY_STATE_DIR")
+    secrets_manager = SecretsManager(state_dir=state_dir_override)
+    config = load_config(config_path, secrets=secrets_manager.get)
 
     registry = PluginRegistry()
     registry.load_entry_points()
 
-    manager = UpstreamManager(config.upstreams, registry)
+    # OAuthManager persists its own state via the shared secrets store.
+    # It must exist before UpstreamManager so HTTP transports with
+    # oauth2 auth can reach it through the settings side-channel.
+    oauth_manager = OAuthManager(secrets=secrets_manager)
+    manager = UpstreamManager(config.upstreams, registry, oauth_manager=oauth_manager)
     bridge = ProxyBridge(manager)
 
     sink_name = config.telemetry.sink
@@ -60,7 +73,17 @@ def build_state(config_path: str) -> AppState:
         batch_size=config.telemetry.batch_size,
         flush_interval_ms=config.telemetry.flush_interval_ms,
     )
-    return AppState(config, raw_config, manager, bridge, telemetry, registry=registry, config_path=config_path)
+    return AppState(
+        config,
+        raw_config,
+        manager,
+        bridge,
+        telemetry,
+        registry=registry,
+        config_path=config_path,
+        secrets_manager=secrets_manager,
+        oauth_manager=oauth_manager,
+    )
 
 
 # ---------------------------------------------------------------------------
