@@ -371,3 +371,130 @@ def test_oauth_callback_bypasses_onboarding_gate(tmp_path: Path) -> None:
         r = client.get("/admin/api/oauth/callback")
         assert r.status_code == 400
     store.close()
+
+
+# ---------------------------------------------------------------------------
+# Fail-closed middleware: the admin API must never be reachable with no token
+# ---------------------------------------------------------------------------
+
+
+def test_admin_api_blocked_when_no_token_configured(tmp_path: Path) -> None:
+    """Baseline fail-closed case: no onboarding row, no admin token, no
+    ``require_token``. The middleware must still refuse every
+    non-onboarding admin API path with 503 ``admin_token_not_configured``.
+    """
+    app, store = _build_app(
+        tmp_path,
+        with_onboarding=False,
+        require_token=False,
+        admin_token=None,
+    )
+    with TestClient(app) as client:
+        r = client.get("/admin/api/config")
+        assert r.status_code == 503, r.text
+        body = r.json()
+        assert body["detail"] == "admin_token_not_configured"
+        # The onboarding projection is still included so the dashboard
+        # can render the right empty-state.
+        assert "onboarding" in body
+
+        # Onboarding status is always reachable even without a token.
+        r = client.get("/admin/api/onboarding/status")
+        assert r.status_code == 200
+
+        # OAuth callback is deliberately excluded from the gate so
+        # browser redirects from the auth server can complete.
+        r = client.get("/admin/api/oauth/callback")
+        assert r.status_code == 400
+    store.close()
+
+
+def test_admin_api_stays_closed_after_expired_onboarding_without_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The TTL-expiry hole the fail-closed gate exists to plug.
+
+    Before the fix: ``public["required"]`` flips to ``False`` once the
+    onboarding window lapses, which used to let the middleware fall
+    through to a no-auth ``require_admin_auth`` and expose the admin
+    API without a bearer. After the fix: the
+    ``resolve_admin_token`` branch still returns 503 because the live
+    config has neither ``auth.token`` nor a readable ``auth.token_env``.
+    """
+    monkeypatch.setenv("MCPY_ONBOARDING_TTL_S", "60")
+    app, store = _build_app(
+        tmp_path,
+        with_onboarding=True,
+        require_token=False,
+        admin_token=None,
+    )
+    # Backdate the onboarding row far past the TTL, same trick
+    # test_onboarding_expired_returns_410 uses.
+    from datetime import datetime, timezone
+
+    from sqlalchemy import update as sa_update
+
+    from mcp_proxy.storage.schema import onboarding_table
+
+    with store.engine.begin() as conn:
+        conn.execute(
+            sa_update(onboarding_table).values(
+                created_at=datetime.fromtimestamp(
+                    time.time() - 3600, tz=timezone.utc
+                )
+            )
+        )
+
+    with TestClient(app) as client:
+        # This is the exact scenario the hole left open: onboarding
+        # row present but expired AND no real token configured.
+        r = client.get("/admin/api/config")
+        assert r.status_code == 503, r.text
+        body = r.json()
+        assert body["detail"] == "admin_token_not_configured"
+
+        # Other admin endpoints must also stay closed, not just /config.
+        for p in (
+            "/admin/api/upstreams",
+            "/admin/api/secrets",
+            "/admin/api/policies",
+            "/admin/api/traffic",
+        ):
+            r = client.get(p)
+            assert r.status_code == 503, f"{p} should be gated, got {r.status_code}"
+            assert r.json()["detail"] == "admin_token_not_configured"
+
+        # Onboarding mutations still return 410 (expired) via their
+        # own access-control helper — the fail-closed gate does NOT
+        # replace that, they compose.
+        r = client.post(
+            "/admin/api/onboarding/set_admin_token",
+            json={"token": "a-very-long-and-random-token-value"},
+        )
+        assert r.status_code == 410
+    store.close()
+
+
+def test_admin_api_open_once_token_is_configured(tmp_path: Path) -> None:
+    """Sanity check the other direction: when a real token IS in the
+    config, the fail-closed branch doesn't accidentally block valid
+    requests. The normal ``require_admin_auth`` gate takes over.
+    """
+    app, store = _build_app(
+        tmp_path,
+        with_onboarding=False,
+        require_token=True,
+        admin_token="a-very-long-and-random-token-value",
+    )
+    with TestClient(app) as client:
+        # No bearer → 401 from require_admin_auth, not 503.
+        r = client.get("/admin/api/config")
+        assert r.status_code == 401
+
+        # With bearer → 200.
+        r = client.get(
+            "/admin/api/config",
+            headers={"Authorization": "Bearer a-very-long-and-random-token-value"},
+        )
+        assert r.status_code == 200
+    store.close()
