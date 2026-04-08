@@ -9,7 +9,7 @@ import time
 from codecs import getincrementaldecoder
 import asyncio
 from collections import deque
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -147,15 +147,28 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
         try:
             yield
         finally:
+            # Best-effort teardown: a failure in any single subsystem
+            # shutdown must not prevent the others from running, and
+            # must not propagate up through the lifespan (which would
+            # cause uvicorn to exit with a non-zero status on SIGTERM).
             state.bridge.start_shutdown()
             state.runtime_config.telemetry.emit_nowait({"event": "proxy_shutdown_start"})
+            shutdown_steps: list[tuple[str, Any]] = []
             if state.file_drop is not None:
-                await state.file_drop.stop()
-            await state.route_discovery.stop()
-            await state.runtime_config.stop()
-            await state.manager.stop()
+                shutdown_steps.append(("file_drop", state.file_drop.stop()))
+            shutdown_steps.append(("route_discovery", state.route_discovery.stop()))
+            shutdown_steps.append(("runtime_config", state.runtime_config.stop()))
+            shutdown_steps.append(("manager", state.manager.stop()))
+            for name, coro in shutdown_steps:
+                try:
+                    await coro
+                except Exception as exc:
+                    logging.getLogger(__name__).warning(
+                        "shutdown step '%s' raised: %s", name, exc
+                    )
             state.runtime_config.telemetry.emit_nowait({"event": "proxy_shutdown_complete"})
-            await state.runtime_config.telemetry.stop()
+            with suppress(Exception):
+                await state.runtime_config.telemetry.stop()
 
     app = FastAPI(title="MCPy Proxy", lifespan=lifespan)
     admin_service = AdminService(state.manager, state.telemetry, state.raw_config, state.runtime_config, state.log_buffer)

@@ -24,6 +24,7 @@ upstream without deleting its definition.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from copy import deepcopy
@@ -145,11 +146,23 @@ class FileDropWatcher:
         if self._task is None:
             return
         self._stop.set()
-        try:
-            await asyncio.wait_for(self._task, timeout=self.poll_interval_s * 3)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
-            self._task.cancel()
+        task = self._task
         self._task = None
+        try:
+            await asyncio.wait_for(task, timeout=self.poll_interval_s * 3)
+        except asyncio.TimeoutError:
+            task.cancel()
+            with contextlib.suppress(BaseException):
+                await task
+        except asyncio.CancelledError:
+            # Task was cancelled externally (e.g. by uvicorn signal handler
+            # tearing down the loop); nothing more to do.
+            pass
+        except Exception as exc:  # pragma: no cover - defensive
+            # The watcher loop catches its own per-scan errors, but be
+            # resilient against anything escaping so a shutdown from
+            # SIGTERM doesn't leave uvicorn exiting non-zero.
+            logger.warning("file-drop watcher raised during shutdown: %s", exc)
 
     async def _loop(self) -> None:
         # Emit one initial scan immediately so dropped files are picked
