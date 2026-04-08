@@ -25,9 +25,47 @@ SecretResolver = Callable[[str], "str | None"]
 
 
 class AuthConfig(BaseModel):
-    """Authentication settings."""
+    """Authentication settings.
 
+    Two ways to configure the admin bearer token, in priority order:
+
+    - ``token`` — the literal bearer string, typically populated via a
+      ``${secret:NAME}`` reference or (for the first-run onboarding
+      wizard) directly into the DB config row. Always wins when set.
+    - ``token_env`` — the name of an env var the proxy reads at
+      request time. Left for backwards compatibility with file-based
+      deployments that wire MCP_PROXY_TOKEN via ``.env`` or compose.
+
+    :func:`mcp_proxy.config.resolve_admin_token` returns the effective
+    bearer given an ``AuthConfig`` + an env lookup + a secret resolver,
+    which is what the server's request-auth code calls. Direct callers
+    should use that helper rather than reading either field directly.
+    """
+
+    token: str | None = None
     token_env: str | None = None
+
+
+def resolve_admin_token(
+    auth: "AuthConfig",
+    *,
+    env_lookup: Callable[[str], "str | None"] | None = None,
+) -> str | None:
+    """Return the configured bearer token, preferring ``auth.token``.
+
+    ``auth.token`` has already been through ``${secret:NAME}``/
+    ``${env:FOO}`` expansion by the time this runs, so we can treat it
+    as a literal. If ``token`` is unset or empty we fall back to
+    ``token_env`` (looked up via ``env_lookup`` so tests can inject a
+    stub) for compatibility with the historical env-var path.
+    """
+    if auth.token:
+        return auth.token
+    if auth.token_env:
+        if env_lookup is None:
+            env_lookup = os.getenv
+        return env_lookup(auth.token_env)
+    return None
 
 
 class AdminConfig(BaseModel):
@@ -349,6 +387,9 @@ def redact_secrets(payload: dict[str, Any]) -> dict[str, Any]:
     """Redact secret-like values from config payload.
 
     Covers:
+      - ``auth.token``      the literal admin bearer (set by the
+                            onboarding wizard and stored directly in the
+                            config row).
       - ``auth.token_env`` (the env var *name* that holds the proxy bearer).
       - ``telemetry.headers[*]`` for header names that look secret-shaped.
       - ``upstreams[*].env[*]`` for stdio upstreams — any env key that looks
@@ -361,9 +402,12 @@ def redact_secrets(payload: dict[str, Any]) -> dict[str, Any]:
     for key in list(headers.keys()):
         if _looks_secret_shaped(key):
             headers[key] = "***REDACTED***"
-    token_env = redacted.get("auth", {}).get("token_env")
-    if token_env:
-        redacted["auth"]["token_env"] = "***REDACTED_ENV***"
+    auth_block = redacted.get("auth") or {}
+    if isinstance(auth_block, dict):
+        if auth_block.get("token"):
+            auth_block["token"] = "***REDACTED***"
+        if auth_block.get("token_env"):
+            auth_block["token_env"] = "***REDACTED_ENV***"
     upstreams = redacted.get("upstreams") or {}
     if isinstance(upstreams, dict):
         for _name, settings in upstreams.items():

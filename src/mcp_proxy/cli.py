@@ -113,13 +113,20 @@ def _bootstrap_config_payload(
         return store.get_active_config() or raw, f"seed:{seed_path}"
 
     # Last resort: write a minimal default so the proxy can start. The
-    # operator must add upstreams via the admin API.
+    # operator must add upstreams via the admin API. We also deliberately
+    # leave admin.require_token=False and no auth.token for the default
+    # bootstrap so the onboarding wizard at /admin/onboarding is reachable
+    # without any prior configuration — the wizard itself writes a real
+    # token via /admin/api/onboarding/set_admin_token before finishing.
     payload = json.loads(json.dumps(_DEFAULT_BOOTSTRAP_CONFIG))
+    payload["admin"]["require_token"] = False
+    payload["auth"] = {"token": None, "token_env": None}
     store.save_active_config(payload, source="bootstrap:default")
     logger.warning(
         "config: DB empty and no --config seed provided; wrote a minimal "
-        "default config (version %d). Use the admin API or "
-        "`mcp-proxy register` to add upstreams.",
+        "default config (version %d) with admin auth DISABLED. Visit "
+        "/admin/onboarding to set the admin token and complete first-run "
+        "setup.",
         store.active_version(),
     )
     return payload, "default"
@@ -145,6 +152,12 @@ def build_state(config_path: str | None) -> AppState:
     store = open_store(db_url, fernet=fernet)
 
     raw_config, source_label = _bootstrap_config_payload(store, config_path)
+
+    # Seed the onboarding row on fresh DBs so the wizard has a target.
+    # ``ensure_onboarding_row`` is idempotent — if the row already
+    # exists (subsequent starts) nothing happens.
+    if source_label == "default":
+        store.ensure_onboarding_row()
 
     # SecretsManager wraps the same store so secrets writes from the
     # admin API and OAuth flows land in one DB, one Fernet, one cache.

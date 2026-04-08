@@ -138,3 +138,27 @@ export interface DiscoveryClient {
 export interface DiscoveryResponse {
   clients: DiscoveryClient[];
 }
+
+// ---------------------------------------------------------------------------
+// Onboarding
+// ---------------------------------------------------------------------------
+
+export interface OnboardingStatus {
+  active: boolean;
+  completed: boolean;
+  expired: boolean;
+  required: boolean;
+  created_at?: number;
+  admin_token_set_at?: number | null;
+  first_upstream_at?: number | null;
+  completed_at?: number | null;
+  completed_by?: string | null;
+  ttl_s?: number;
+  expires_at?: number | null;
+}
+
+export interface OnboardingSetTokenResponse {
+  applied: boolean;
+  onboarding: OnboardingStatus;
+}
+

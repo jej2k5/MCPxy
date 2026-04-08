@@ -52,6 +52,7 @@ from mcp_proxy.storage.db import build_engine, run_migrations
 from mcp_proxy.storage.schema import (
     config_history_table,
     config_kv_table,
+    onboarding_table,
     secrets_table,
     upstreams_table,
 )
@@ -154,6 +155,42 @@ class UpstreamRecord:
     source: str | None
     created_at: float
     updated_at: float
+
+
+@dataclass
+class OnboardingState:
+    """First-run onboarding row loaded from the ``onboarding`` table.
+
+    ``active`` = row exists and ``completed_at`` is null.
+    ``expired`` = ``active`` but ``created_at`` is older than the
+    configured TTL; the admin endpoints return 410 Gone in that case.
+    """
+
+    created_at: float
+    admin_token_set_at: float | None
+    first_upstream_at: float | None
+    completed_at: float | None
+    completed_by: str | None
+
+    def is_complete(self) -> bool:
+        return self.completed_at is not None
+
+    def to_public_dict(self, *, ttl_s: float, now: float | None = None) -> dict[str, Any]:
+        t = now if now is not None else time.time()
+        active = self.completed_at is None
+        expired = active and (t - self.created_at) > ttl_s
+        return {
+            "created_at": self.created_at,
+            "admin_token_set_at": self.admin_token_set_at,
+            "first_upstream_at": self.first_upstream_at,
+            "completed_at": self.completed_at,
+            "completed_by": self.completed_by,
+            "active": active and not expired,
+            "completed": self.completed_at is not None,
+            "expired": expired,
+            "ttl_s": ttl_s,
+            "expires_at": self.created_at + ttl_s if active else None,
+        }
 
 
 class ConfigStore:
@@ -478,6 +515,102 @@ class ConfigStore:
             return True
 
     # ------------------------------------------------------------------
+    # Onboarding state
+    # ------------------------------------------------------------------
+
+    def get_onboarding_state(self) -> OnboardingState | None:
+        """Return the singleton onboarding row or ``None`` if it doesn't exist.
+
+        A missing row means one of two things: (a) this DB was created
+        before the onboarding feature shipped, or (b) the proxy is
+        pre-first-run and ``ensure_onboarding_row()`` hasn't been called
+        yet. Callers that want "start fresh on every new DB" semantics
+        should go through ``ensure_onboarding_row``.
+        """
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                select(
+                    onboarding_table.c.created_at,
+                    onboarding_table.c.admin_token_set_at,
+                    onboarding_table.c.first_upstream_at,
+                    onboarding_table.c.completed_at,
+                    onboarding_table.c.completed_by,
+                ).order_by(onboarding_table.c.id.asc()).limit(1)
+            ).first()
+        if row is None:
+            return None
+        return OnboardingState(
+            created_at=_epoch(row[0]) or time.time(),
+            admin_token_set_at=_epoch(row[1]),
+            first_upstream_at=_epoch(row[2]),
+            completed_at=_epoch(row[3]),
+            completed_by=row[4],
+        )
+
+    def ensure_onboarding_row(self) -> OnboardingState:
+        """Create the onboarding row if missing and return current state.
+
+        Called from the CLI bootstrap path after the default config has
+        been written, so any brand-new deployment starts with a fresh
+        onboarding record ready for the wizard to stamp. Idempotent:
+        subsequent calls return the existing row unchanged.
+        """
+        existing = self.get_onboarding_state()
+        if existing is not None:
+            return existing
+        with self._lock:
+            # Re-check inside the lock to avoid a double insert under
+            # concurrent startup (fan-out from gunicorn workers etc.).
+            with self._engine.begin() as conn:
+                row = conn.execute(
+                    select(onboarding_table.c.id).limit(1)
+                ).first()
+                if row is None:
+                    conn.execute(insert(onboarding_table).values())
+        fresh = self.get_onboarding_state()
+        assert fresh is not None
+        return fresh
+
+    def stamp_admin_token_set(self) -> OnboardingState:
+        with self._lock:
+            with self._engine.begin() as conn:
+                conn.execute(
+                    update(onboarding_table).values(
+                        admin_token_set_at=func.now()
+                    )
+                )
+        state = self.get_onboarding_state()
+        assert state is not None
+        return state
+
+    def stamp_first_upstream(self) -> OnboardingState:
+        with self._lock:
+            with self._engine.begin() as conn:
+                conn.execute(
+                    update(onboarding_table).values(
+                        first_upstream_at=func.now()
+                    )
+                )
+        state = self.get_onboarding_state()
+        assert state is not None
+        return state
+
+    def finish_onboarding(self, *, completed_by: str | None = None) -> OnboardingState:
+        with self._lock:
+            with self._engine.begin() as conn:
+                conn.execute(
+                    update(onboarding_table)
+                    .where(onboarding_table.c.completed_at.is_(None))
+                    .values(
+                        completed_at=func.now(),
+                        completed_by=completed_by,
+                    )
+                )
+        state = self.get_onboarding_state()
+        assert state is not None
+        return state
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
@@ -515,6 +648,7 @@ __all__ = [
     "ACTIVE_CONFIG_KEY",
     "ConfigStore",
     "ConfigStoreError",
+    "OnboardingState",
     "SECRET_NAME_RE",
     "SecretNotFoundError",
     "SecretRecord",
