@@ -12,6 +12,7 @@ from typing import Any
 
 from mcp_proxy.config import AppConfig, validate_config_payload
 from mcp_proxy.plugins.registry import PluginRegistry
+from mcp_proxy.policy.engine import PolicyEngine
 from mcp_proxy.proxy.manager import UpstreamManager
 from mcp_proxy.telemetry.pipeline import TelemetryPipeline
 
@@ -30,6 +31,7 @@ class RuntimeConfigManager:
         registry: PluginRegistry,
         config_path: str | None = None,
         poll_interval_s: float = 0.5,
+        policy_engine: PolicyEngine | None = None,
     ) -> None:
         self.raw_config = raw_config
         self.config = config
@@ -38,6 +40,7 @@ class RuntimeConfigManager:
         self.registry = registry
         self.config_path = config_path
         self.poll_interval_s = poll_interval_s
+        self.policy_engine = policy_engine
         self._lock = asyncio.Lock()
         self._watch_task: asyncio.Task[None] | None = None
         self._last_mtime_ns: int | None = None
@@ -99,7 +102,10 @@ class RuntimeConfigManager:
                 self.raw_config.clear()
                 self.raw_config.update(deepcopy(candidate))
                 self.config = next_config
+                if self.policy_engine is not None:
+                    self.policy_engine.replace_config(next_config)
                 diff["upstreams"] = upstream_diff
+                diff["policies_changed"] = backup_config.policies != next_config.policies
                 return {"applied": True, "rolled_back": False, "diff": diff, "source": source}
             except Exception as exc:
                 self.raw_config.clear()
@@ -107,6 +113,8 @@ class RuntimeConfigManager:
                 self.config = backup_config
                 if self.telemetry is not backup_telemetry:
                     self.telemetry = backup_telemetry
+                if self.policy_engine is not None:
+                    self.policy_engine.replace_config(backup_config)
                 return {"applied": False, "error": str(exc), "rolled_back": True, "diff": diff}
 
     async def _apply_telemetry_if_needed(self, next_config: AppConfig) -> None:

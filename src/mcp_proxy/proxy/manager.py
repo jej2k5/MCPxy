@@ -4,15 +4,30 @@ from __future__ import annotations
 
 from typing import Any
 
+from pydantic import BaseModel
+
 from mcp_proxy.plugins.registry import PluginRegistry
 from mcp_proxy.proxy.base import UpstreamTransport
+
+
+def _as_dict(settings: Any) -> dict[str, Any]:
+    """Coerce a settings object to a plain dict.
+
+    Accepts either a raw dict (legacy) or a Pydantic model (when called from
+    AppConfig.upstreams which validates upstream entries into typed models).
+    """
+    if isinstance(settings, BaseModel):
+        return settings.model_dump()
+    return dict(settings)
 
 
 class UpstreamManager:
     """Manage lifecycle and routing for upstream transports."""
 
-    def __init__(self, config_upstreams: dict[str, dict[str, Any]], registry: PluginRegistry) -> None:
-        self._config_upstreams = config_upstreams
+    def __init__(self, config_upstreams: dict[str, Any], registry: PluginRegistry) -> None:
+        self._config_upstreams: dict[str, dict[str, Any]] = {
+            name: _as_dict(settings) for name, settings in config_upstreams.items()
+        }
         self._registry = registry
         self._upstreams: dict[str, UpstreamTransport] = {}
 
@@ -30,10 +45,14 @@ class UpstreamManager:
         for upstream in self._upstreams.values():
             await upstream.stop()
 
-    async def apply_diff(self, next_upstreams: dict[str, dict[str, Any]]) -> dict[str, list[str]]:
+    async def apply_diff(self, next_upstreams: dict[str, Any]) -> dict[str, list[str]]:
         """Apply upstream configuration changes with rollback on failure."""
         current_config = {name: dict(settings) for name, settings in self._config_upstreams.items()}
         current_upstreams = dict(self._upstreams)
+        # Normalize incoming entries to plain dicts so equality comparisons
+        # against current_config (also dicts) work and downstream `.get()`
+        # access keeps working when callers pass Pydantic-validated configs.
+        next_upstreams = {name: _as_dict(settings) for name, settings in next_upstreams.items()}
 
         to_remove = [name for name in current_config if name not in next_upstreams]
         to_add = [name for name in next_upstreams if name not in current_config]

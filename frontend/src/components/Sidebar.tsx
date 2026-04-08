@@ -6,6 +6,7 @@ import {
   LayoutDashboard,
   LogOut,
   Settings2,
+  ShieldCheck,
 } from "lucide-react";
 import { setToken } from "../api/client";
 
@@ -13,6 +14,7 @@ const items = [
   { to: "/overview", label: "Overview", icon: LayoutDashboard },
   { to: "/routes", label: "Routes", icon: Cable },
   { to: "/traffic", label: "Traffic", icon: Activity },
+  { to: "/policies", label: "Policies", icon: ShieldCheck },
   { to: "/logs", label: "Logs", icon: FileText },
   { to: "/config", label: "Config", icon: Settings2 },
 ];

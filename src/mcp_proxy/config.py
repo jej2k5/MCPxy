@@ -43,6 +43,44 @@ class TelemetryConfig(BaseModel):
     drop_policy: Literal["drop_oldest", "drop_newest"] = "drop_newest"
 
 
+class MethodPolicy(BaseModel):
+    """JSON-RPC method allow/deny lists with wildcard support."""
+
+    allow: list[str] | None = None
+    deny: list[str] | None = None
+
+
+class RateLimitPolicy(BaseModel):
+    """Per-upstream token-bucket rate limit."""
+
+    requests_per_second: float = Field(gt=0)
+    burst: int = Field(gt=0)
+    scope: Literal["upstream", "client_ip", "both"] = "upstream"
+
+
+class SizePolicy(BaseModel):
+    """Request payload size cap."""
+
+    max_request_bytes: int = Field(gt=0)
+
+
+class UpstreamPolicies(BaseModel):
+    """Policies applicable at a given scope (global or per-upstream)."""
+
+    methods: MethodPolicy | None = None
+    rate_limit: RateLimitPolicy | None = None
+    size: SizePolicy | None = None
+
+
+class PoliciesConfig(BaseModel):
+    """Top-level policy configuration."""
+
+    model_config = {"populate_by_name": True}
+
+    global_: UpstreamPolicies | None = Field(default=None, alias="global")
+    per_upstream: dict[str, UpstreamPolicies] = Field(default_factory=dict)
+
+
 class StdioUpstreamConfig(BaseModel):
     """Stdio upstream configuration."""
 
@@ -71,6 +109,7 @@ class AppConfig(BaseModel):
     admin: AdminConfig = Field(default_factory=AdminConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     upstreams: dict[str, UpstreamConfig] = Field(default_factory=dict)
+    policies: PoliciesConfig = Field(default_factory=PoliciesConfig)
 
     @model_validator(mode="after")
     def _validate_default_upstream(self) -> "AppConfig":

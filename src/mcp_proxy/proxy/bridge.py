@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from mcp_proxy.jsonrpc import JsonRpcError, is_notification
 from mcp_proxy.observability.traffic import TrafficRecord
+from mcp_proxy.policy.engine import PolicyEngine
 from mcp_proxy.proxy.manager import UpstreamManager
 
 
@@ -22,6 +23,7 @@ class ProxyBridge:
         self._shutdown_event = asyncio.Event()
         self._telemetry_emit: Any | None = None
         self._traffic_recorder: Callable[[TrafficRecord], None] | None = None
+        self._policy_engine: PolicyEngine | None = None
 
     def set_telemetry_emitter(self, emit: Any) -> None:
         """Attach a telemetry emission callable."""
@@ -30,6 +32,10 @@ class ProxyBridge:
     def set_traffic_recorder(self, recorder: Callable[[TrafficRecord], None]) -> None:
         """Attach a traffic recording callable (called once per forwarded request)."""
         self._traffic_recorder = recorder
+
+    def set_policy_engine(self, engine: PolicyEngine) -> None:
+        """Attach a policy engine for per-request access control."""
+        self._policy_engine = engine
 
     def start_shutdown(self) -> None:
         """Mark bridge as shutting down and reject new/in-flight forwards."""
@@ -118,6 +124,32 @@ class ProxyBridge:
         if self._shutdown_event.is_set():
             record_error("proxy_shutting_down")
             raise self._shutdown_error(message, upstream_name, "shutdown_reject_new")
+
+        if self._policy_engine is not None:
+            decision = self._policy_engine.check(
+                upstream=upstream_name,
+                message=message,
+                request_bytes=request_bytes,
+                client_ip=client_ip,
+            )
+            if not decision.allowed:
+                reason = decision.reason or "policy_blocked"
+                self._emit_record(
+                    self._build_record(
+                        upstream=upstream_name,
+                        message=message,
+                        status="denied",
+                        started_at=started_at,
+                        request_bytes=request_bytes,
+                        client_ip=client_ip,
+                        error_code=reason,
+                    )
+                )
+                raise JsonRpcError(
+                    -32003,
+                    f"policy_blocked:{reason}",
+                    request_id=message.get("id"),
+                )
 
         try:
             self.queue.put_nowait(1)

@@ -9,6 +9,7 @@ import time
 from codecs import getincrementaldecoder
 import asyncio
 from collections import deque
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -20,6 +21,7 @@ from mcp_proxy.config import AppConfig
 from mcp_proxy.jsonrpc import JsonRpcError, is_notification
 from mcp_proxy.observability.discovery import RouteDiscoverer
 from mcp_proxy.observability.traffic import TrafficRecorder
+from mcp_proxy.policy.engine import PolicyEngine
 from mcp_proxy.proxy.admin import AdminService
 from mcp_proxy.proxy.bridge import ProxyBridge
 from mcp_proxy.plugins.registry import PluginRegistry
@@ -70,6 +72,7 @@ class AppState:
         self.log_buffer: deque[dict[str, Any]] = deque(maxlen=400)
         self.traffic = TrafficRecorder()
         self.route_discovery = RouteDiscoverer(manager)
+        self.policy_engine = PolicyEngine(self.config)
         self.runtime_config = RuntimeConfigManager(
             raw_config=self.raw_config,
             config=self.config,
@@ -77,6 +80,7 @@ class AppState:
             telemetry=self.telemetry,
             registry=self.registry,
             config_path=self.config_path,
+            policy_engine=self.policy_engine,
         )
 
 
@@ -103,6 +107,7 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
     admin_service = AdminService(state.manager, state.telemetry, state.raw_config, state.runtime_config, state.log_buffer)
     state.bridge.set_telemetry_emitter(state.runtime_config.telemetry.emit_nowait)
     state.bridge.set_traffic_recorder(state.traffic.record)
+    state.bridge.set_policy_engine(state.policy_engine)
 
     root_logger = logging.getLogger()
     root_logger.addHandler(InMemoryLogHandler(state.log_buffer))
@@ -484,6 +489,30 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
         require_admin_auth(request)
         await state.route_discovery.refresh_now()
         return JSONResponse(state.route_discovery.snapshot())
+
+    @app.get("/admin/api/policies")
+    async def admin_api_policies_get(request: Request) -> JSONResponse:
+        require_admin_auth(request)
+        return JSONResponse(
+            state.runtime_config.config.policies.model_dump(by_alias=True, mode="json")
+        )
+
+    @app.post("/admin/api/policies")
+    async def admin_api_policies_set(request: Request) -> JSONResponse:
+        require_admin_auth(request)
+        body = await request.json()
+        policies = body.get("policies", body)
+        # Merge with the rest of the live raw config so the apply pipeline
+        # validates a complete document and the existing diff/rollback
+        # behavior covers the change.
+        merged = deepcopy(state.raw_config)
+        merged["policies"] = policies
+        result = await state.runtime_config.apply(
+            merged,
+            dry_run=bool(body.get("dry_run", False)),
+            source="admin.api.policies",
+        )
+        return JSONResponse(result)
 
     # SPA catch-all registered LAST so specific /admin/api/* and /admin/static/*
     # routes match first. Handles deep-link navigation like /admin/traffic.
