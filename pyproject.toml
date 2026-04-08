@@ -55,6 +55,15 @@ addopts = "-q"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+mcp_proxy = [
+  "web/templates/*.html",
+  "web/static/*",
+  "web/dist/*",
+  "web/dist/**/*",
+]

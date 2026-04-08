@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from typing import Any
+import json
+import time
+from typing import Any, Callable
 
 from mcp_proxy.jsonrpc import JsonRpcError, is_notification
+from mcp_proxy.observability.traffic import TrafficRecord
 from mcp_proxy.proxy.manager import UpstreamManager
 
 
@@ -18,10 +21,15 @@ class ProxyBridge:
         self.queue: asyncio.Queue[int] = asyncio.Queue(maxsize=queue_size)
         self._shutdown_event = asyncio.Event()
         self._telemetry_emit: Any | None = None
+        self._traffic_recorder: Callable[[TrafficRecord], None] | None = None
 
     def set_telemetry_emitter(self, emit: Any) -> None:
         """Attach a telemetry emission callable."""
         self._telemetry_emit = emit
+
+    def set_traffic_recorder(self, recorder: Callable[[TrafficRecord], None]) -> None:
+        """Attach a traffic recording callable (called once per forwarded request)."""
+        self._traffic_recorder = recorder
 
     def start_shutdown(self) -> None:
         """Mark bridge as shutting down and reject new/in-flight forwards."""
@@ -30,6 +38,47 @@ class ProxyBridge:
     def _emit(self, event: dict[str, Any]) -> None:
         if callable(self._telemetry_emit):
             self._telemetry_emit(event)
+
+    def _build_record(
+        self,
+        *,
+        upstream: str,
+        message: dict[str, Any],
+        status: str,
+        started_at: float,
+        request_bytes: int,
+        client_ip: str | None,
+        response: dict[str, Any] | None = None,
+        error_code: str | None = None,
+    ) -> TrafficRecord:
+        latency_ms = round((time.monotonic() - started_at) * 1000.0, 3)
+        response_bytes = 0
+        if response is not None:
+            try:
+                response_bytes = len(json.dumps(response).encode("utf-8"))
+            except (TypeError, ValueError):
+                response_bytes = 0
+        return TrafficRecord(
+            timestamp=time.time(),
+            upstream=upstream,
+            method=message.get("method") if isinstance(message, dict) else None,
+            request_id=message.get("id") if isinstance(message, dict) else None,
+            status=status,
+            latency_ms=latency_ms,
+            request_bytes=request_bytes,
+            response_bytes=response_bytes,
+            error_code=error_code,
+            client_ip=client_ip,
+        )
+
+    def _emit_record(self, rec: TrafficRecord) -> None:
+        if self._traffic_recorder is None:
+            return
+        try:
+            self._traffic_recorder(rec)
+        except Exception:
+            # Never let observability break the request path.
+            pass
 
     def _shutdown_error(self, message: dict[str, Any], upstream_name: str, reason: str) -> JsonRpcError:
         self._emit(
@@ -42,26 +91,62 @@ class ProxyBridge:
         )
         return JsonRpcError(-32000, "proxy_shutting_down", request_id=message.get("id"))
 
-    async def forward(self, upstream_name: str, message: dict[str, Any]) -> dict[str, Any] | None:
+    async def forward(
+        self,
+        upstream_name: str,
+        message: dict[str, Any],
+        *,
+        request_bytes: int = 0,
+        client_ip: str | None = None,
+    ) -> dict[str, Any] | None:
         """Forward a message to an upstream."""
+        started_at = time.monotonic()
+
+        def record_error(error_code: str) -> None:
+            self._emit_record(
+                self._build_record(
+                    upstream=upstream_name,
+                    message=message,
+                    status="error",
+                    started_at=started_at,
+                    request_bytes=request_bytes,
+                    client_ip=client_ip,
+                    error_code=error_code,
+                )
+            )
+
         if self._shutdown_event.is_set():
+            record_error("proxy_shutting_down")
             raise self._shutdown_error(message, upstream_name, "shutdown_reject_new")
 
         try:
             self.queue.put_nowait(1)
         except asyncio.QueueFull as exc:
+            record_error("proxy_overloaded")
             raise JsonRpcError(-32002, "proxy_overloaded", request_id=message.get("id")) from exc
 
         upstream = self.manager.get(upstream_name)
         if not upstream:
             self.queue.get_nowait()
+            record_error("upstream_unavailable")
             raise JsonRpcError(-32001, "upstream_unavailable", request_id=message.get("id"))
 
         try:
             if self._shutdown_event.is_set():
+                record_error("proxy_shutting_down")
                 raise self._shutdown_error(message, upstream_name, "shutdown_reject_in_flight")
             if is_notification(message):
                 await upstream.send_notification(message)
+                self._emit_record(
+                    self._build_record(
+                        upstream=upstream_name,
+                        message=message,
+                        status="ok",
+                        started_at=started_at,
+                        request_bytes=request_bytes,
+                        client_ip=client_ip,
+                    )
+                )
                 return None
 
             request_task = asyncio.create_task(upstream.request(message))
@@ -71,6 +156,7 @@ class ProxyBridge:
                 request_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
                     await request_task
+                record_error("proxy_shutting_down")
                 raise self._shutdown_error(message, upstream_name, "shutdown_reject_in_flight")
 
             shutdown_waiter.cancel()
@@ -78,7 +164,22 @@ class ProxyBridge:
                 await shutdown_waiter
             response = await request_task
             if response is None:
+                record_error("upstream_unavailable")
                 raise JsonRpcError(-32001, "upstream_unavailable", request_id=message.get("id"))
+
+            is_error = isinstance(response, dict) and "error" in response
+            self._emit_record(
+                self._build_record(
+                    upstream=upstream_name,
+                    message=message,
+                    status="error" if is_error else "ok",
+                    started_at=started_at,
+                    request_bytes=request_bytes,
+                    client_ip=client_ip,
+                    response=response,
+                    error_code=(response.get("error") or {}).get("message") if is_error else None,
+                )
+            )
             return response
         finally:
             self.queue.get_nowait()

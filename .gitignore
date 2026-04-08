@@ -4,3 +4,13 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Python editable-install metadata
+src/mcpy_proxy.egg-info/
+*.egg-info/
+
+# Frontend build tooling (source lives in frontend/; built artifacts are
+# committed under src/mcp_proxy/web/dist/ so the wheel ships a working UI).
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
