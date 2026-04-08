@@ -49,6 +49,7 @@ from mcp_proxy.proxy.manager import UpstreamManager
 from mcp_proxy.routing import resolve_upstream
 from mcp_proxy.runtime import RuntimeConfigManager
 from mcp_proxy.secrets import SecretsManager, SecretStoreError
+from mcp_proxy.storage.config_store import ConfigStore
 from mcp_proxy.telemetry.pipeline import TelemetryPipeline
 
 
@@ -83,6 +84,7 @@ class AppState:
         config_path: str | None = None,
         secrets_manager: SecretsManager | None = None,
         oauth_manager: OAuthManager | None = None,
+        config_store: ConfigStore | None = None,
     ) -> None:
         self.config = config
         self.raw_config = raw_config
@@ -97,6 +99,12 @@ class AppState:
         # leave it None and the runtime config path will skip secret
         # expansion (secrets_manager.get is simply not installed).
         self.secrets_manager = secrets_manager or SecretsManager(autoload=False)
+        # ConfigStore: prefer the one supplied by the caller (CLI bootstrap
+        # path); fall back to the one already wrapped inside the secrets
+        # manager so the CLI's "single store, single fernet, single source
+        # of truth" guarantee holds even when AppState is constructed in a
+        # legacy two-arg shape from tests.
+        self.config_store: ConfigStore = config_store or self.secrets_manager.store
         # OAuth manager is a process-wide coordinator for every HTTP
         # upstream that uses oauth2. It persists tokens and dynamic
         # client credentials via the same SecretsManager, so rotation of
@@ -124,6 +132,7 @@ class AppState:
             policy_engine=self.policy_engine,
             secrets_resolver=self.secrets_manager.get,
             on_config_applied=self._register_oauth_configs,
+            store=self.config_store,
         )
         # Seed the OAuth manager with any upstreams that already have
         # oauth2 configured, so persisted tokens from a previous run are
