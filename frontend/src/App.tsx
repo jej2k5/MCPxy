@@ -6,6 +6,7 @@ import Overview from "./pages/Overview";
 import RoutesPage from "./pages/Routes";
 import Traffic from "./pages/Traffic";
 import Policies from "./pages/Policies";
+import Connect from "./pages/Connect";
 import Logs from "./pages/Logs";
 import Config from "./pages/Config";
 import { apiGet, getToken } from "./api/client";
@@ -58,6 +59,7 @@ export default function App() {
             <Route path="/routes" element={<RoutesPage />} />
             <Route path="/traffic" element={<Traffic />} />
             <Route path="/policies" element={<Policies />} />
+            <Route path="/connect" element={<Connect />} />
             <Route path="/logs" element={<Logs />} />
             <Route path="/config" element={<Config />} />
             <Route path="*" element={<Navigate to="/overview" replace />} />

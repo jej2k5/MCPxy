@@ -18,6 +18,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from mcp_proxy.config import AppConfig
+from mcp_proxy.install.clients import InstallOptions, get_adapter, list_clients
 from mcp_proxy.jsonrpc import JsonRpcError, is_notification
 from mcp_proxy.observability.discovery import RouteDiscoverer
 from mcp_proxy.observability.traffic import TrafficRecorder
@@ -513,6 +514,41 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
             source="admin.api.policies",
         )
         return JSONResponse(result)
+
+    @app.get("/admin/api/install/clients")
+    async def admin_api_install_clients(request: Request) -> JSONResponse:
+        require_admin_auth(request)
+        return JSONResponse({"clients": list_clients()})
+
+    @app.get("/admin/api/install/{client}")
+    async def admin_api_install_snippet(
+        request: Request,
+        client: str,
+        url: str | None = None,
+        token_env: str | None = None,
+        upstream: str | None = None,
+        name: str = "mcpy",
+    ) -> JSONResponse:
+        require_admin_auth(request)
+        try:
+            adapter = get_adapter(client)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        opts = InstallOptions(
+            name=name,
+            url=url or "http://127.0.0.1:8000",
+            token_env=token_env or state.runtime_config.config.auth.token_env,
+            upstream=upstream,
+        )
+        return JSONResponse(
+            {
+                "client": client,
+                "supports_auto_install": adapter.supports_auto_install(),
+                "entry": adapter.format_entry(opts),
+                "merged": adapter.merge(None, opts),
+                "config_paths": [str(p) for p in adapter.default_config_paths()],
+            }
+        )
 
     # SPA catch-all registered LAST so specific /admin/api/* and /admin/static/*
     # routes match first. Handles deep-link navigation like /admin/traffic.

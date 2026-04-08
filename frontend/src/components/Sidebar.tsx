@@ -5,6 +5,7 @@ import {
   FileText,
   LayoutDashboard,
   LogOut,
+  Plug,
   Settings2,
   ShieldCheck,
 } from "lucide-react";
@@ -15,6 +16,7 @@ const items = [
   { to: "/routes", label: "Routes", icon: Cable },
   { to: "/traffic", label: "Traffic", icon: Activity },
   { to: "/policies", label: "Policies", icon: ShieldCheck },
+  { to: "/connect", label: "Connect", icon: Plug },
   { to: "/logs", label: "Logs", icon: FileText },
   { to: "/config", label: "Config", icon: Settings2 },
 ];
