@@ -1,0 +1,280 @@
+{
+  "version": 1,
+  "updated_at": "2026-04-08",
+  "entries": [
+    {
+      "id": "filesystem",
+      "name": "Filesystem",
+      "description": "Read, write, and search files in a sandboxed directory on the local filesystem.",
+      "category": "storage",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
+      "transport": "stdio",
+      "install_hint": "Requires Node.js (npx).",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "${allowed_path}"],
+      "variables": [
+        {
+          "name": "allowed_path",
+          "description": "Absolute path the server is allowed to access.",
+          "required": true,
+          "default": "/tmp"
+        }
+      ],
+      "tags": ["files", "local", "storage"]
+    },
+    {
+      "id": "git",
+      "name": "Git",
+      "description": "Inspect a local Git repository: status, log, diff, blame, show.",
+      "category": "developer",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/git",
+      "transport": "stdio",
+      "install_hint": "Requires uvx (pip install uv).",
+      "command": "uvx",
+      "args": ["mcp-server-git", "--repository", "${repo_path}"],
+      "variables": [
+        {
+          "name": "repo_path",
+          "description": "Absolute path to the Git repository.",
+          "required": true
+        }
+      ],
+      "tags": ["git", "vcs", "developer"]
+    },
+    {
+      "id": "github",
+      "name": "GitHub",
+      "description": "Read and write GitHub issues, pull requests, repositories, and search.",
+      "category": "developer",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/github",
+      "transport": "stdio",
+      "install_hint": "Requires Node.js (npx) and a GitHub personal access token.",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${github_token}"
+      },
+      "variables": [
+        {
+          "name": "github_token",
+          "description": "GitHub personal access token (PAT).",
+          "required": true,
+          "secret": true
+        }
+      ],
+      "tags": ["github", "git", "developer", "api"]
+    },
+    {
+      "id": "gitlab",
+      "name": "GitLab",
+      "description": "Read and write GitLab projects, issues, and merge requests.",
+      "category": "developer",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/gitlab",
+      "transport": "stdio",
+      "install_hint": "Requires Node.js (npx) and a GitLab personal access token.",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-gitlab"],
+      "env": {
+        "GITLAB_PERSONAL_ACCESS_TOKEN": "${gitlab_token}",
+        "GITLAB_API_URL": "${gitlab_url}"
+      },
+      "variables": [
+        {
+          "name": "gitlab_token",
+          "description": "GitLab personal access token.",
+          "required": true,
+          "secret": true
+        },
+        {
+          "name": "gitlab_url",
+          "description": "GitLab API URL.",
+          "default": "https://gitlab.com/api/v4",
+          "required": false
+        }
+      ],
+      "tags": ["gitlab", "git", "developer", "api"]
+    },
+    {
+      "id": "memory",
+      "name": "Memory (Knowledge Graph)",
+      "description": "Persistent knowledge graph memory for the assistant across conversations.",
+      "category": "ai",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/memory",
+      "transport": "stdio",
+      "install_hint": "Requires Node.js (npx).",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"],
+      "tags": ["memory", "knowledge-graph", "ai"]
+    },
+    {
+      "id": "postgres",
+      "name": "PostgreSQL",
+      "description": "Read-only SQL queries against a PostgreSQL database with schema inspection.",
+      "category": "database",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/postgres",
+      "transport": "stdio",
+      "install_hint": "Requires Node.js (npx).",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-postgres", "${database_url}"],
+      "variables": [
+        {
+          "name": "database_url",
+          "description": "PostgreSQL connection URL (postgres://user:pass@host/db).",
+          "required": true,
+          "secret": true
+        }
+      ],
+      "tags": ["postgres", "sql", "database"]
+    },
+    {
+      "id": "sqlite",
+      "name": "SQLite",
+      "description": "Query and modify a SQLite database file with schema introspection.",
+      "category": "database",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/sqlite",
+      "transport": "stdio",
+      "install_hint": "Requires uvx (pip install uv).",
+      "command": "uvx",
+      "args": ["mcp-server-sqlite", "--db-path", "${db_path}"],
+      "variables": [
+        {
+          "name": "db_path",
+          "description": "Absolute path to the SQLite database file.",
+          "required": true
+        }
+      ],
+      "tags": ["sqlite", "sql", "database"]
+    },
+    {
+      "id": "brave-search",
+      "name": "Brave Search",
+      "description": "Web and local search via the Brave Search API.",
+      "category": "search",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/brave-search",
+      "transport": "stdio",
+      "install_hint": "Requires Node.js (npx) and a Brave Search API key.",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+      "env": {
+        "BRAVE_API_KEY": "${brave_api_key}"
+      },
+      "variables": [
+        {
+          "name": "brave_api_key",
+          "description": "Brave Search API key.",
+          "required": true,
+          "secret": true
+        }
+      ],
+      "tags": ["search", "web", "brave"]
+    },
+    {
+      "id": "fetch",
+      "name": "Fetch",
+      "description": "Fetch web pages and convert them to markdown for the assistant to read.",
+      "category": "web",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/fetch",
+      "transport": "stdio",
+      "install_hint": "Requires uvx (pip install uv).",
+      "command": "uvx",
+      "args": ["mcp-server-fetch"],
+      "tags": ["web", "http", "fetch", "scraping"]
+    },
+    {
+      "id": "puppeteer",
+      "name": "Puppeteer",
+      "description": "Browser automation via Puppeteer: navigate, click, screenshot, extract.",
+      "category": "web",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/puppeteer",
+      "transport": "stdio",
+      "install_hint": "Requires Node.js (npx) and Chrome/Chromium.",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-puppeteer"],
+      "tags": ["browser", "automation", "scraping"]
+    },
+    {
+      "id": "slack",
+      "name": "Slack",
+      "description": "Read Slack channels and post messages via the Slack Web API.",
+      "category": "communication",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/slack",
+      "transport": "stdio",
+      "install_hint": "Requires Node.js (npx) and a Slack bot token.",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-slack"],
+      "env": {
+        "SLACK_BOT_TOKEN": "${slack_bot_token}",
+        "SLACK_TEAM_ID": "${slack_team_id}"
+      },
+      "variables": [
+        {
+          "name": "slack_bot_token",
+          "description": "Slack bot token (xoxb-...).",
+          "required": true,
+          "secret": true
+        },
+        {
+          "name": "slack_team_id",
+          "description": "Slack team ID.",
+          "required": true
+        }
+      ],
+      "tags": ["slack", "messaging", "communication"]
+    },
+    {
+      "id": "time",
+      "name": "Time",
+      "description": "Time and timezone helpers: current time, timezone conversion.",
+      "category": "utility",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/time",
+      "transport": "stdio",
+      "install_hint": "Requires uvx (pip install uv).",
+      "command": "uvx",
+      "args": ["mcp-server-time"],
+      "tags": ["time", "timezone", "utility"]
+    },
+    {
+      "id": "everart",
+      "name": "EverArt",
+      "description": "Generate images via the EverArt API.",
+      "category": "ai",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/everart",
+      "transport": "stdio",
+      "install_hint": "Requires Node.js (npx) and an EverArt API key.",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-everart"],
+      "env": {
+        "EVERART_API_KEY": "${everart_api_key}"
+      },
+      "variables": [
+        {
+          "name": "everart_api_key",
+          "description": "EverArt API key.",
+          "required": true,
+          "secret": true
+        }
+      ],
+      "tags": ["images", "ai", "generation"]
+    },
+    {
+      "id": "sentry",
+      "name": "Sentry",
+      "description": "Read Sentry issues, events, and project metadata.",
+      "category": "observability",
+      "homepage": "https://github.com/modelcontextprotocol/servers/tree/main/src/sentry",
+      "transport": "stdio",
+      "install_hint": "Requires uvx (pip install uv) and a Sentry auth token.",
+      "command": "uvx",
+      "args": ["mcp-server-sentry", "--auth-token", "${sentry_token}"],
+      "variables": [
+        {
+          "name": "sentry_token",
+          "description": "Sentry API auth token.",
+          "required": true,
+          "secret": true
+        }
+      ],
+      "tags": ["sentry", "observability", "errors"]
+    }
+  ]
+}

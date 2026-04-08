@@ -30,8 +30,13 @@ def _client():
 def test_admin_api_endpoints_and_ui_auth() -> None:
     client = _client()
 
-    unauth = client.get("/admin")
-    assert unauth.status_code == 401
+    # The SPA shell is public so the LoginGate can render in the browser.
+    unauth_ui = client.get("/admin")
+    assert unauth_ui.status_code == 200
+
+    # But every /admin/api/* endpoint remains auth-gated.
+    unauth_api = client.get("/admin/api/config")
+    assert unauth_api.status_code == 401
 
     headers = {"Authorization": "Bearer secret"}
     page = client.get("/admin", headers=headers)

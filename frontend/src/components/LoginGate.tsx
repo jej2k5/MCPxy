@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { apiGet, setToken } from "../api/client";
-import type { HealthResponse } from "../api/types";
 
 export default function LoginGate({ onAuthed }: { onAuthed: () => void }) {
   const [token, setTokenInput] = useState("");
@@ -13,7 +12,9 @@ export default function LoginGate({ onAuthed }: { onAuthed: () => void }) {
     setError(null);
     setToken(token || null);
     try {
-      await apiGet<HealthResponse>("/health");
+      // Hit an auth-gated endpoint so a wrong token is actually rejected.
+      // /health is public and would accept anything.
+      await apiGet<unknown>("/admin/api/config");
       onAuthed();
     } catch (err) {
       setToken(null);

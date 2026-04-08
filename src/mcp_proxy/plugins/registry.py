@@ -65,13 +65,24 @@ class PluginRegistry:
         )
 
     def load_entry_points(self, *, allow_overrides: bool = False) -> None:
-        """Load plugin entry points from installed distributions."""
+        """Load plugin entry points from installed distributions.
+
+        Entry points whose class is identical to an already-registered
+        built-in are silently skipped so MCPy's own pyproject entry points
+        don't collide with the built-ins registered in ``__init__``.
+        """
         for ep in entry_points(group="mcp_proxy.upstreams"):
-            self.register_upstream(ep.name, ep.load(), allow_override=allow_overrides, source=f"entry point '{ep.value}'")
+            plugin = ep.load()
+            if self.upstreams.get(ep.name) is plugin:
+                continue
+            self.register_upstream(ep.name, plugin, allow_override=allow_overrides, source=f"entry point '{ep.value}'")
         for ep in entry_points(group="mcp_proxy.telemetry_sinks"):
+            plugin = ep.load()
+            if self.telemetry_sinks.get(ep.name) is plugin:
+                continue
             self.register_telemetry_sink(
                 ep.name,
-                ep.load(),
+                plugin,
                 allow_override=allow_overrides,
                 source=f"entry point '{ep.value}'",
             )

@@ -9,6 +9,7 @@ import time
 from codecs import getincrementaldecoder
 import asyncio
 from collections import deque
+from contextlib import asynccontextmanager, suppress
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -18,6 +19,14 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from mcp_proxy.config import AppConfig
+from mcp_proxy.discovery.catalog import Catalog, load_catalog
+from mcp_proxy.discovery.importers import IMPORTERS, discover_all, get_importer
+from mcp_proxy.discovery.registration import (
+    DEFAULT_DROP_DIR,
+    FileDropWatcher,
+    RegistrationError,
+    RegistrationService,
+)
 from mcp_proxy.install.clients import InstallOptions, get_adapter, list_clients
 from mcp_proxy.jsonrpc import JsonRpcError, is_notification
 from mcp_proxy.observability.discovery import RouteDiscoverer
@@ -83,6 +92,22 @@ class AppState:
             config_path=self.config_path,
             policy_engine=self.policy_engine,
         )
+        self.registration = RegistrationService(self.runtime_config)
+        try:
+            self.catalog: Catalog | None = load_catalog()
+        except Exception as exc:  # pragma: no cover - catalog is bundled
+            logging.getLogger(__name__).error("Failed to load MCP catalog: %s", exc)
+            self.catalog = None
+        self.file_drop: FileDropWatcher | None = None
+        drop_dir = raw_config.get("registration", {}).get("drop_dir") if isinstance(raw_config.get("registration"), dict) else None
+        drop_enabled = True
+        if isinstance(raw_config.get("registration"), dict):
+            drop_enabled = bool(raw_config["registration"].get("file_drop_enabled", True))
+        if drop_enabled:
+            self.file_drop = FileDropWatcher(
+                self.registration,
+                directory=Path(drop_dir) if drop_dir else DEFAULT_DROP_DIR,
+            )
 
 
 def _decode_message(raw: Any) -> dict[str, Any]:
@@ -104,7 +129,48 @@ def _client_ip(request: Request) -> str:
 
 def create_app(state: AppState, health_path: str = "/health", request_timeout_s: float = 30.0) -> FastAPI:
     """Create configured FastAPI app."""
-    app = FastAPI(title="MCPy Proxy")
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        try:
+            signal.signal(signal.SIGINT, handle_shutdown_signal)
+            signal.signal(signal.SIGTERM, handle_shutdown_signal)
+        except ValueError:
+            pass
+        await state.manager.start()
+        await state.runtime_config.telemetry.start()
+        state.runtime_config.telemetry.emit_nowait({"event": "proxy_startup"})
+        await state.runtime_config.start()
+        await state.route_discovery.start()
+        if state.file_drop is not None:
+            await state.file_drop.start()
+        try:
+            yield
+        finally:
+            # Best-effort teardown: a failure in any single subsystem
+            # shutdown must not prevent the others from running, and
+            # must not propagate up through the lifespan (which would
+            # cause uvicorn to exit with a non-zero status on SIGTERM).
+            state.bridge.start_shutdown()
+            state.runtime_config.telemetry.emit_nowait({"event": "proxy_shutdown_start"})
+            shutdown_steps: list[tuple[str, Any]] = []
+            if state.file_drop is not None:
+                shutdown_steps.append(("file_drop", state.file_drop.stop()))
+            shutdown_steps.append(("route_discovery", state.route_discovery.stop()))
+            shutdown_steps.append(("runtime_config", state.runtime_config.stop()))
+            shutdown_steps.append(("manager", state.manager.stop()))
+            for name, coro in shutdown_steps:
+                try:
+                    await coro
+                except Exception as exc:
+                    logging.getLogger(__name__).warning(
+                        "shutdown step '%s' raised: %s", name, exc
+                    )
+            state.runtime_config.telemetry.emit_nowait({"event": "proxy_shutdown_complete"})
+            with suppress(Exception):
+                await state.runtime_config.telemetry.stop()
+
+    app = FastAPI(title="MCPy Proxy", lifespan=lifespan)
     admin_service = AdminService(state.manager, state.telemetry, state.raw_config, state.runtime_config, state.log_buffer)
     state.bridge.set_telemetry_emitter(state.runtime_config.telemetry.emit_nowait)
     state.bridge.set_traffic_recorder(state.traffic.record)
@@ -296,13 +362,6 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
             }
         )
 
-    def install_signal_handlers() -> None:
-        try:
-            signal.signal(signal.SIGINT, handle_shutdown_signal)
-            signal.signal(signal.SIGTERM, handle_shutdown_signal)
-        except ValueError:
-            return
-
     app.state.handle_shutdown_signal = handle_shutdown_signal
 
     web_root = Path(__file__).parent / "web"
@@ -316,25 +375,6 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
         )
     if (web_root / "static").is_dir():
         app.mount("/admin/static", StaticFiles(directory=str(web_root / "static")), name="admin-static")
-
-    @app.on_event("startup")
-    async def on_startup() -> None:
-        install_signal_handlers()
-        await state.manager.start()
-        await state.runtime_config.telemetry.start()
-        state.runtime_config.telemetry.emit_nowait({"event": "proxy_startup"})
-        await state.runtime_config.start()
-        await state.route_discovery.start()
-
-    @app.on_event("shutdown")
-    async def on_shutdown() -> None:
-        state.bridge.start_shutdown()
-        state.runtime_config.telemetry.emit_nowait({"event": "proxy_shutdown_start"})
-        await state.route_discovery.stop()
-        await state.runtime_config.stop()
-        await state.manager.stop()
-        state.runtime_config.telemetry.emit_nowait({"event": "proxy_shutdown_complete"})
-        await state.runtime_config.telemetry.stop()
 
     async def handle_proxy_with_timeout(request: Request, path_name: str | None, x_mcp_upstream: str | None) -> Response:
         try:
@@ -373,8 +413,9 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
         )
 
     @app.get("/admin", response_class=HTMLResponse)
-    async def admin_index(request: Request) -> HTMLResponse:
-        require_admin_auth(request)
+    async def admin_index(_request: Request) -> HTMLResponse:
+        # The SPA HTML is public; the in-page LoginGate collects the admin
+        # token and all /admin/api/* endpoints remain auth-gated.
         return HTMLResponse(_dashboard_html())
 
     @app.get("/admin/api/config")
@@ -550,13 +591,171 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
             }
         )
 
+    @app.get("/admin/api/upstreams/registered")
+    async def admin_api_registered(request: Request) -> JSONResponse:
+        require_admin_auth(request)
+        return JSONResponse(state.registration.snapshot())
+
+    @app.post("/admin/api/upstreams")
+    async def admin_api_register(request: Request) -> JSONResponse:
+        require_admin_auth(request)
+        body = await request.json()
+        name = body.get("name")
+        definition = body.get("config") or body.get("definition")
+        replace = bool(body.get("replace", False))
+        if not name or not isinstance(definition, dict):
+            raise HTTPException(status_code=400, detail="body requires 'name' and 'config' object")
+        try:
+            result = await state.registration.add(
+                name=str(name),
+                definition=definition,
+                replace=replace,
+                source="admin.api.register",
+            )
+        except RegistrationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if not result.get("applied") and not result.get("dry_run"):
+            raise HTTPException(status_code=400, detail=result.get("error", "registration failed"))
+        return JSONResponse(result)
+
+    @app.delete("/admin/api/upstreams/{name}")
+    async def admin_api_unregister(request: Request, name: str) -> JSONResponse:
+        require_admin_auth(request)
+        try:
+            result = await state.registration.remove(name=name, source="admin.api.unregister")
+        except RegistrationError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        if not result.get("applied"):
+            raise HTTPException(status_code=400, detail=result.get("error", "unregister failed"))
+        return JSONResponse(result)
+
+    @app.get("/admin/api/discovery/clients")
+    async def admin_api_discovery_clients(request: Request) -> JSONResponse:
+        require_admin_auth(request)
+        return JSONResponse(discover_all())
+
+    @app.get("/admin/api/discovery/clients/{client}")
+    async def admin_api_discovery_client(request: Request, client: str) -> JSONResponse:
+        require_admin_auth(request)
+        try:
+            importer = get_importer(client)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        path = importer.find_config()
+        upstreams = importer.read() if path is not None else []
+        return JSONResponse(
+            {
+                "client_id": importer.client_id,
+                "display_name": importer.display_name,
+                "config_path": str(path) if path else None,
+                "detected": path is not None,
+                "upstreams": [u.to_dict() for u in upstreams],
+            }
+        )
+
+    @app.post("/admin/api/discovery/import")
+    async def admin_api_discovery_import(request: Request) -> JSONResponse:
+        require_admin_auth(request)
+        body = await request.json()
+        client = body.get("client")
+        names = body.get("upstreams")
+        replace = bool(body.get("replace", False))
+        if not client or not isinstance(names, list):
+            raise HTTPException(
+                status_code=400,
+                detail="body requires 'client' and 'upstreams' array",
+            )
+        try:
+            importer = get_importer(str(client))
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        discovered = {u.name: u for u in importer.read()}
+        selected: list[tuple[str, dict[str, Any]]] = []
+        missing: list[str] = []
+        for name in names:
+            upstream = discovered.get(str(name))
+            if upstream is None:
+                missing.append(str(name))
+                continue
+            selected.append((upstream.name, upstream.config))
+        if missing:
+            raise HTTPException(
+                status_code=404,
+                detail=f"upstreams not found in {client}: {', '.join(missing)}",
+            )
+        try:
+            result = await state.registration.bulk_add(
+                selected,
+                replace=replace,
+                source=f"admin.api.import:{client}",
+            )
+        except RegistrationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if not result.get("applied"):
+            raise HTTPException(status_code=400, detail=result.get("error", "import failed"))
+        return JSONResponse({**result, "imported": [n for n, _ in selected]})
+
+    @app.get("/admin/api/catalog")
+    async def admin_api_catalog(
+        request: Request,
+        q: str = "",
+        category: str | None = None,
+    ) -> JSONResponse:
+        require_admin_auth(request)
+        if state.catalog is None:
+            raise HTTPException(status_code=503, detail="catalog_unavailable")
+        entries = state.catalog.search(q, category=category)
+        return JSONResponse(
+            {
+                "version": state.catalog.version,
+                "updated_at": state.catalog.updated_at,
+                "categories": state.catalog.categories(),
+                "entries": [e.to_dict() for e in entries],
+            }
+        )
+
+    @app.post("/admin/api/catalog/install")
+    async def admin_api_catalog_install(request: Request) -> JSONResponse:
+        require_admin_auth(request)
+        if state.catalog is None:
+            raise HTTPException(status_code=503, detail="catalog_unavailable")
+        body = await request.json()
+        entry_id = body.get("id")
+        name = body.get("name")
+        variables = body.get("variables") or {}
+        replace = bool(body.get("replace", False))
+        if not entry_id:
+            raise HTTPException(status_code=400, detail="body requires 'id'")
+        entry = state.catalog.get(str(entry_id))
+        if entry is None:
+            raise HTTPException(status_code=404, detail=f"catalog entry '{entry_id}' not found")
+        try:
+            resolved_name, definition = entry.materialize(
+                name=name if name else None,
+                variables=variables,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        try:
+            result = await state.registration.add(
+                name=resolved_name,
+                definition=definition,
+                replace=replace,
+                source=f"admin.api.catalog:{entry_id}",
+            )
+        except RegistrationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if not result.get("applied"):
+            raise HTTPException(status_code=400, detail=result.get("error", "catalog install failed"))
+        return JSONResponse({**result, "installed": {"id": entry_id, "name": resolved_name}})
+
     # SPA catch-all registered LAST so specific /admin/api/* and /admin/static/*
     # routes match first. Handles deep-link navigation like /admin/traffic.
     @app.get("/admin/{path:path}", response_class=HTMLResponse)
-    async def admin_spa(request: Request, path: str) -> HTMLResponse:
+    async def admin_spa(_request: Request, path: str) -> HTMLResponse:
         if path.startswith("api/") or path.startswith("static/"):
             raise HTTPException(status_code=404, detail="not_found")
-        require_admin_auth(request)
+        # SPA HTML is public; /admin/api/* remains auth-gated.
         return HTMLResponse(_dashboard_html())
 
     return app

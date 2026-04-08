@@ -2,6 +2,8 @@ import { NavLink } from "react-router-dom";
 import {
   Activity,
   Cable,
+  Compass,
+  Download,
   FileText,
   LayoutDashboard,
   LogOut,
@@ -16,6 +18,8 @@ const items = [
   { to: "/routes", label: "Routes", icon: Cable },
   { to: "/traffic", label: "Traffic", icon: Activity },
   { to: "/policies", label: "Policies", icon: ShieldCheck },
+  { to: "/browse", label: "Browse", icon: Compass },
+  { to: "/import", label: "Import", icon: Download },
   { to: "/connect", label: "Connect", icon: Plug },
   { to: "/logs", label: "Logs", icon: FileText },
   { to: "/config", label: "Config", icon: Settings2 },
