@@ -1,10 +1,43 @@
 # MCPy Proxy
 
-A production-ready **multi-upstream MCP proxy** that exposes a single endpoint and routes JSON-RPC 2.0 MCP traffic to many upstream MCP servers.
+A production-ready **multi-upstream MCP proxy** with a modern live
+dashboard, a policy engine, and one-line installers for Claude Desktop,
+Claude Code, and ChatGPT.
+
+![MCPy Overview dashboard](docs/screenshots/dashboard-overview.png)
+
+## Highlights
+
+- **Multi-upstream MCP proxy** — multiplex JSON-RPC 2.0 MCP traffic to
+  many upstream MCP servers (stdio subprocesses or HTTP endpoints) behind
+  a single URL, with precedence-based routing (path > header > in-band >
+  default).
+- **Modern live dashboard** at `/admin` — Overview, Routes, Live Traffic,
+  Policies, Connect, Logs, and Config pages. React + Vite + Tailwind,
+  shipped pre-built so `pip install` gives you a working UI.
+- **Live traffic observability** — every forwarded request is recorded
+  (metadata only — bodies are never stored) and streamed to the
+  dashboard over Server-Sent Events. Per-upstream p50/p95/p99 latency,
+  error rate, and a rolling 5-minute traffic chart.
+- **Policy engine** — per-upstream method ACLs with wildcards, token-
+  bucket rate limits (scoped per upstream, per client IP, or both), and
+  max request-size caps. Edited live from the Policies page and hot-
+  reloaded through the same atomic apply + rollback pipeline as the
+  config file.
+- **One-line install into MCP clients** — `mcp-proxy install --client
+  claude-desktop | claude-code | chatgpt` backs up your existing client
+  config and registers MCPy as a tool. A bundled **stdio adapter**
+  (`mcp-proxy stdio --connect URL`) lets stdio-only clients like Claude
+  Desktop talk to the HTTP proxy without a separate shim.
+- **Hot reload** of the full config (upstreams, telemetry, policies)
+  with atomic apply and rollback on failure.
 
 ## Project Overview
 
-MCPy Proxy multiplexes requests to heterogeneous upstream MCP servers (stdio and HTTP built-in), includes a privileged internal admin MCP interface, and ships with an asynchronous telemetry pipeline.
+MCPy Proxy multiplexes requests to heterogeneous upstream MCP servers
+(stdio and HTTP built-in), includes a privileged internal admin MCP
+interface, and ships with an asynchronous telemetry pipeline, a v1
+policy engine, and a live React dashboard.
 
 ## What MCP Is
 
@@ -28,21 +61,46 @@ Model Context Protocol (MCP) is a protocol for tool/server interoperability. In 
 
 ## Architecture Overview
 
-- **FastAPI server** handling `/mcp`, `/mcp/{name}`, `/health`.
+- **FastAPI server** handling `/mcp`, `/mcp/{name}`, `/health`, `/status`,
+  and the admin surface under `/admin/*`.
 - **Routing engine** with precedence: path > header > in-band > default.
-- **Upstream manager** for plugin-based transport instances.
+- **Upstream manager** for plugin-based transport instances (stdio +
+  HTTP built in; additional transports discoverable via Python entry
+  points).
 - **Admin MCP handler** mounted as `/mcp/__admin__` by default.
+- **Traffic recorder** instrumented at the single forwarding chokepoint
+  (`ProxyBridge.forward`). Metadata-only ring buffer (2000 entries) plus
+  per-subscriber fan-out for live SSE streaming.
+- **Policy engine** (`src/mcp_proxy/policy/engine.py`) — size → method
+  ACL → rate limit, first-match-deny-wins, buckets preserved across hot
+  reloads when configuration is unchanged.
 - **Telemetry pipeline** with bounded queue + sink plugins.
 - **Plugin registry** loading built-ins and Python entry points.
+- **React + Vite dashboard** under `frontend/`, built to
+  `src/mcp_proxy/web/dist/` and served from `/admin`.
 
 
 ## Repository Layout
 
 - Design notes: `docs/Design.md`
+- Screenshots: `docs/screenshots/`
+- Frontend source: `frontend/` (React + Vite + Tailwind)
+- Built dashboard: `src/mcp_proxy/web/dist/`
 - Plugin registry: `src/mcp_proxy/plugins/registry.py`
-- Admin web template: `src/mcp_proxy/web/templates/admin.html`
-- Admin web static assets: `src/mcp_proxy/web/static/admin.css`, `src/mcp_proxy/web/static/admin.js`
-- Behavior tests: `tests/test_routing_precedence.py`, `tests/test_admin_auth.py`, `tests/test_atomic_apply_rollback.py`, `tests/test_redaction.py`, `tests/test_plugin_discovery.py`, `tests/test_telemetry_queue_flush.py`, `tests/test_stdio_restart.py`, `tests/test_overload_handling.py`, `tests/test_hot_reload.py`, `tests/test_admin_ui_auth.py`
+- Traffic + route discovery: `src/mcp_proxy/observability/`
+- Policy engine: `src/mcp_proxy/policy/engine.py`
+- Install helpers: `src/mcp_proxy/install/clients.py`
+- Stdio adapter: `src/mcp_proxy/stdio_adapter.py`
+- Behavior tests: `tests/test_routing_precedence.py`,
+  `tests/test_admin_auth.py`, `tests/test_atomic_apply_rollback.py`,
+  `tests/test_redaction.py`, `tests/test_plugin_discovery.py`,
+  `tests/test_telemetry_queue_flush.py`, `tests/test_stdio_restart.py`,
+  `tests/test_overload_handling.py`, `tests/test_hot_reload.py`,
+  `tests/test_admin_ui_auth.py`, `tests/test_admin_ui_dist.py`,
+  `tests/test_traffic_recorder.py`, `tests/test_traffic_endpoints.py`,
+  `tests/test_bridge_instrumentation.py`, `tests/test_route_discovery.py`,
+  `tests/test_policy_*.py`, `tests/test_install_*.py`,
+  `tests/test_stdio_adapter.py`, `tests/test_cli_install.py`.
 
 ## Quick Start
 
@@ -59,8 +117,20 @@ export MCP_PROXY_TOKEN=$(openssl rand -hex 16)
 mcp-proxy serve --config config.json
 ```
 
-The dashboard is now available at <http://127.0.0.1:8000/admin> (use the
-bearer token above to sign in).
+The dashboard is now available at <http://127.0.0.1:8000/admin>. The
+SPA shell is public so the in-page login form can render; paste the
+bearer token above to sign in. Every `/admin/api/*` endpoint remains
+token-gated.
+
+## Dashboard tour
+
+| | |
+| --- | --- |
+| **Overview** — uptime, total requests, error rate, p95 latency, live traffic chart, per-upstream latency table. | ![Overview](docs/screenshots/dashboard-overview.png) |
+| **Routes** — one card per upstream with health, transport, discovered tools (via periodic `tools/list` probe), and a restart button. | ![Routes](docs/screenshots/dashboard-routes.png) |
+| **Live Traffic** — Server-Sent-Events stream of every forwarded request (metadata only). Filter by upstream, method, or status; pause and clear. | ![Traffic](docs/screenshots/dashboard-traffic.png) |
+| **Policies** — method allow/deny lists (with wildcards), token-bucket rate limits, and size caps. Global and per-upstream. Hot-reloaded through the same atomic apply pipeline as the config file. | ![Policies](docs/screenshots/dashboard-policies.png) |
+| **Connect** — one-click snippets and install commands for Claude Desktop, Claude Code, and ChatGPT. | ![Connect](docs/screenshots/dashboard-connect.png) |
 
 ## Connecting Claude / ChatGPT
 
@@ -134,35 +204,76 @@ Methods:
 - `admin.set_log_level`
 - `admin.send_telemetry`
 - `admin.get_health`
+- `admin.get_logs`
+- `admin.get_policies`
+- `admin.update_policies`
 
 Admin requests are never forwarded to external upstreams.
 
 
 ## Admin Web UI
 
-A lightweight admin UI is available at `/admin` and is auto-generated from the same admin MCP method surface (via internal `/admin/api/*` helper endpoints that proxy to admin MCP methods).
+The dashboard at `/admin` is a React SPA (source: `frontend/`, built to
+`src/mcp_proxy/web/dist/`) that talks to the same admin MCP surface via
+internal `/admin/api/*` helper endpoints.
 
-- Dashboard: upstream status, request/error metrics, telemetry status
-- Upstream management: list + restart + health checks
-- Config editor: view/edit JSON, validate, diff preview (`dry_run`), apply
-- Telemetry panel: queue health + test event emission
-- Logs viewer: recent structured logs with severity/upstream filters
+Pages: **Overview**, **Routes**, **Traffic**, **Policies**, **Connect**,
+**Logs**, **Config**.
 
-### Admin UI Architecture (diagram)
+### Admin UI Architecture
 
 ```text
-Browser (/admin)
-   -> JS calls /admin/api/*
-   -> FastAPI admin helper endpoints
-   -> AdminService (MCP methods)
-   -> RuntimeConfigManager / UpstreamManager / TelemetryPipeline
+Browser (/admin — public SPA shell, in-page LoginGate)
+   -> fetch /admin/api/* with Bearer token
+       -> FastAPI admin helper endpoints
+          -> AdminService / TrafficRecorder / PolicyEngine
+             -> RuntimeConfigManager / UpstreamManager / TelemetryPipeline
+   -> EventSource-style streaming fetch /admin/api/traffic/stream
+      for live-traffic SSE
 ```
 
 ### Access and Security
 
-- `/admin` and `/admin/api/*` enforce the same token and `allowed_clients` rules as `/mcp/__admin__`.
+- The SPA **shell** at `/admin` is public so the in-page login gate can
+  render in a browser. Every `/admin/api/*` endpoint enforces the same
+  bearer-token and `admin.allowed_clients` rules as `/mcp/__admin__`.
+- Request bodies are **never** captured by the traffic recorder —
+  only method name, upstream, status, latency, byte counts, and client
+  IP.
 - Secrets are redacted from returned config payloads.
 - Public read-only status is exposed at `/status` (no authentication).
+
+## Policies
+
+MCPy ships a v1 policy engine that evaluates every forwarded request:
+
+1. **Size cap** — reject requests above `max_request_bytes`.
+2. **Method ACL** — per-upstream `allow` / `deny` lists with `fnmatch`
+   wildcards (e.g. `tools/*`). Global policies apply first; per-upstream
+   policies override the global block for that upstream.
+3. **Rate limit** — token bucket with configurable `requests_per_second`
+   and `burst`, scoped to the upstream, the client IP, or both. Buckets
+   survive hot reloads when the rate config is unchanged, and idle
+   client-IP buckets are evicted to bound cardinality.
+
+Denied requests surface as JSON-RPC error `-32003 policy_blocked:<reason>`
+and appear in the Live Traffic page with `status=denied`.
+
+```json
+{
+  "policies": {
+    "global": {
+      "size": {"max_request_bytes": 1048576}
+    },
+    "per_upstream": {
+      "git": {
+        "methods": {"deny": ["tools/dangerous_*"]},
+        "rate_limit": {"requests_per_second": 10, "burst": 20, "scope": "upstream"}
+      }
+    }
+  }
+}
+```
 
 ## Hot Reload
 
@@ -170,8 +281,9 @@ Runtime config updates are supported without process restart through:
 
 1. `admin.apply_config`
 2. Config file watcher when `--config` is used
+3. The dashboard's Config and Policies pages
 
-Both paths use the same validation + diff + apply pipeline with rollback-on-failure semantics.
+All paths use the same validation + diff + apply pipeline with rollback-on-failure semantics.
 
 ## Telemetry
 

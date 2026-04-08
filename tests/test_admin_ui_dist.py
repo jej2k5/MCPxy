@@ -38,13 +38,18 @@ def _client() -> TestClient:
     )
 
 
-def test_admin_index_requires_auth() -> None:
+def test_admin_index_is_public() -> None:
+    # The SPA shell is intentionally public so the in-page LoginGate can
+    # render and collect the bearer token. Every /admin/api/* endpoint
+    # remains auth-gated.
     client = _client()
     res = client.get("/admin")
-    assert res.status_code == 401
+    assert res.status_code == 200
+    body = res.text
+    assert "<html" in body.lower() or "<!doctype" in body.lower()
 
 
-def test_admin_index_serves_html() -> None:
+def test_admin_index_serves_html_with_token() -> None:
     client = _client()
     res = client.get("/admin", headers={"Authorization": "Bearer secret"})
     assert res.status_code == 200
@@ -54,18 +59,15 @@ def test_admin_index_serves_html() -> None:
 
 def test_admin_spa_catch_all_serves_dashboard_on_sub_routes() -> None:
     if not (DIST_ROOT / "index.html").is_file():
-        # Dashboard was not built; fall back to a soft assertion on graceful 401.
         client = _client()
         res = client.get("/admin/traffic")
-        assert res.status_code in (401, 200, 404)
+        assert res.status_code in (200, 404)
         return
 
     client = _client()
-    unauth = client.get("/admin/traffic")
-    assert unauth.status_code == 401
-    res = client.get("/admin/traffic", headers={"Authorization": "Bearer secret"})
+    # Sub-route is also public so deep links work without a pre-set token.
+    res = client.get("/admin/traffic")
     assert res.status_code == 200
-    # Should be the same HTML as /admin (React Router handles routing client-side)
     assert "<html" in res.text.lower() or "<!doctype" in res.text.lower()
 
 

@@ -9,6 +9,7 @@ import time
 from codecs import getincrementaldecoder
 import asyncio
 from collections import deque
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -104,7 +105,31 @@ def _client_ip(request: Request) -> str:
 
 def create_app(state: AppState, health_path: str = "/health", request_timeout_s: float = 30.0) -> FastAPI:
     """Create configured FastAPI app."""
-    app = FastAPI(title="MCPy Proxy")
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        try:
+            signal.signal(signal.SIGINT, handle_shutdown_signal)
+            signal.signal(signal.SIGTERM, handle_shutdown_signal)
+        except ValueError:
+            pass
+        await state.manager.start()
+        await state.runtime_config.telemetry.start()
+        state.runtime_config.telemetry.emit_nowait({"event": "proxy_startup"})
+        await state.runtime_config.start()
+        await state.route_discovery.start()
+        try:
+            yield
+        finally:
+            state.bridge.start_shutdown()
+            state.runtime_config.telemetry.emit_nowait({"event": "proxy_shutdown_start"})
+            await state.route_discovery.stop()
+            await state.runtime_config.stop()
+            await state.manager.stop()
+            state.runtime_config.telemetry.emit_nowait({"event": "proxy_shutdown_complete"})
+            await state.runtime_config.telemetry.stop()
+
+    app = FastAPI(title="MCPy Proxy", lifespan=lifespan)
     admin_service = AdminService(state.manager, state.telemetry, state.raw_config, state.runtime_config, state.log_buffer)
     state.bridge.set_telemetry_emitter(state.runtime_config.telemetry.emit_nowait)
     state.bridge.set_traffic_recorder(state.traffic.record)
@@ -296,13 +321,6 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
             }
         )
 
-    def install_signal_handlers() -> None:
-        try:
-            signal.signal(signal.SIGINT, handle_shutdown_signal)
-            signal.signal(signal.SIGTERM, handle_shutdown_signal)
-        except ValueError:
-            return
-
     app.state.handle_shutdown_signal = handle_shutdown_signal
 
     web_root = Path(__file__).parent / "web"
@@ -316,25 +334,6 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
         )
     if (web_root / "static").is_dir():
         app.mount("/admin/static", StaticFiles(directory=str(web_root / "static")), name="admin-static")
-
-    @app.on_event("startup")
-    async def on_startup() -> None:
-        install_signal_handlers()
-        await state.manager.start()
-        await state.runtime_config.telemetry.start()
-        state.runtime_config.telemetry.emit_nowait({"event": "proxy_startup"})
-        await state.runtime_config.start()
-        await state.route_discovery.start()
-
-    @app.on_event("shutdown")
-    async def on_shutdown() -> None:
-        state.bridge.start_shutdown()
-        state.runtime_config.telemetry.emit_nowait({"event": "proxy_shutdown_start"})
-        await state.route_discovery.stop()
-        await state.runtime_config.stop()
-        await state.manager.stop()
-        state.runtime_config.telemetry.emit_nowait({"event": "proxy_shutdown_complete"})
-        await state.runtime_config.telemetry.stop()
 
     async def handle_proxy_with_timeout(request: Request, path_name: str | None, x_mcp_upstream: str | None) -> Response:
         try:
@@ -373,8 +372,9 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
         )
 
     @app.get("/admin", response_class=HTMLResponse)
-    async def admin_index(request: Request) -> HTMLResponse:
-        require_admin_auth(request)
+    async def admin_index(_request: Request) -> HTMLResponse:
+        # The SPA HTML is public; the in-page LoginGate collects the admin
+        # token and all /admin/api/* endpoints remain auth-gated.
         return HTMLResponse(_dashboard_html())
 
     @app.get("/admin/api/config")
@@ -553,10 +553,10 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
     # SPA catch-all registered LAST so specific /admin/api/* and /admin/static/*
     # routes match first. Handles deep-link navigation like /admin/traffic.
     @app.get("/admin/{path:path}", response_class=HTMLResponse)
-    async def admin_spa(request: Request, path: str) -> HTMLResponse:
+    async def admin_spa(_request: Request, path: str) -> HTMLResponse:
         if path.startswith("api/") or path.startswith("static/"):
             raise HTTPException(status_code=404, detail="not_found")
-        require_admin_auth(request)
+        # SPA HTML is public; /admin/api/* remains auth-gated.
         return HTMLResponse(_dashboard_html())
 
     return app
