@@ -45,6 +45,8 @@ class AdminService:
             "admin.send_telemetry": self.send_telemetry,
             "admin.get_health": lambda _params: health_provider(),
             "admin.get_logs": self.get_logs,
+            "admin.get_policies": self.get_policies,
+            "admin.update_policies": self.update_policies,
         }
         fn = methods.get(method)
         if fn is None:
@@ -100,3 +102,16 @@ class AdminService:
         if level:
             out = [item for item in out if item.get("level") == str(level).upper()]
         return out
+
+    def get_policies(self, _params: dict[str, Any]) -> dict[str, Any]:
+        return self.runtime_config.config.policies.model_dump(by_alias=True, mode="json")
+
+    async def update_policies(self, params: dict[str, Any]) -> dict[str, Any]:
+        policies = params.get("policies", {})
+        merged = deepcopy(self.runtime_config.raw_config)
+        merged["policies"] = policies
+        return await self.runtime_config.apply(
+            merged,
+            dry_run=bool(params.get("dry_run", False)),
+            source="admin.update_policies",
+        )

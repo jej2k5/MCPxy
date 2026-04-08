@@ -9,6 +9,7 @@ import time
 from codecs import getincrementaldecoder
 import asyncio
 from collections import deque
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -17,7 +18,11 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from mcp_proxy.config import AppConfig
+from mcp_proxy.install.clients import InstallOptions, get_adapter, list_clients
 from mcp_proxy.jsonrpc import JsonRpcError, is_notification
+from mcp_proxy.observability.discovery import RouteDiscoverer
+from mcp_proxy.observability.traffic import TrafficRecorder
+from mcp_proxy.policy.engine import PolicyEngine
 from mcp_proxy.proxy.admin import AdminService
 from mcp_proxy.proxy.bridge import ProxyBridge
 from mcp_proxy.plugins.registry import PluginRegistry
@@ -66,6 +71,9 @@ class AppState:
         self.config_path = config_path
         self.started_at = time.time()
         self.log_buffer: deque[dict[str, Any]] = deque(maxlen=400)
+        self.traffic = TrafficRecorder()
+        self.route_discovery = RouteDiscoverer(manager)
+        self.policy_engine = PolicyEngine(self.config)
         self.runtime_config = RuntimeConfigManager(
             raw_config=self.raw_config,
             config=self.config,
@@ -73,6 +81,7 @@ class AppState:
             telemetry=self.telemetry,
             registry=self.registry,
             config_path=self.config_path,
+            policy_engine=self.policy_engine,
         )
 
 
@@ -98,6 +107,8 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
     app = FastAPI(title="MCPy Proxy")
     admin_service = AdminService(state.manager, state.telemetry, state.raw_config, state.runtime_config, state.log_buffer)
     state.bridge.set_telemetry_emitter(state.runtime_config.telemetry.emit_nowait)
+    state.bridge.set_traffic_recorder(state.traffic.record)
+    state.bridge.set_policy_engine(state.policy_engine)
 
     root_logger = logging.getLogger()
     root_logger.addHandler(InMemoryLogHandler(state.log_buffer))
@@ -213,6 +224,7 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
 
     async def handle_proxy(request: Request, path_name: str | None, x_mcp_upstream: str | None) -> Response:
         require_auth_if_needed(request)
+        client_ip = _client_ip(request)
         async def iter_response_lines() -> AsyncIterator[bytes]:
             async for msg in parse_messages(request):
                 admin = state.runtime_config.config.admin
@@ -237,7 +249,16 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
                         yield (json.dumps(err) + "\n").encode("utf-8")
                     continue
                 try:
-                    out = await state.bridge.forward(upstream, cleaned)
+                    try:
+                        request_bytes = len(json.dumps(cleaned).encode("utf-8"))
+                    except (TypeError, ValueError):
+                        request_bytes = 0
+                    out = await state.bridge.forward(
+                        upstream,
+                        cleaned,
+                        request_bytes=request_bytes,
+                        client_ip=client_ip,
+                    )
                     if out is not None:
                         yield (json.dumps(out) + "\n").encode("utf-8")
                 except JsonRpcError as exc:
@@ -285,7 +306,16 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
     app.state.handle_shutdown_signal = handle_shutdown_signal
 
     web_root = Path(__file__).parent / "web"
-    app.mount("/admin/static", StaticFiles(directory=str(web_root / "static")), name="admin-static")
+    dist_root = web_root / "dist"
+    dist_assets = dist_root / "assets"
+    if dist_assets.is_dir():
+        app.mount(
+            "/admin/static/dist/assets",
+            StaticFiles(directory=str(dist_assets)),
+            name="admin-dist-assets",
+        )
+    if (web_root / "static").is_dir():
+        app.mount("/admin/static", StaticFiles(directory=str(web_root / "static")), name="admin-static")
 
     @app.on_event("startup")
     async def on_startup() -> None:
@@ -294,11 +324,13 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
         await state.runtime_config.telemetry.start()
         state.runtime_config.telemetry.emit_nowait({"event": "proxy_startup"})
         await state.runtime_config.start()
+        await state.route_discovery.start()
 
     @app.on_event("shutdown")
     async def on_shutdown() -> None:
         state.bridge.start_shutdown()
         state.runtime_config.telemetry.emit_nowait({"event": "proxy_shutdown_start"})
+        await state.route_discovery.stop()
         await state.runtime_config.stop()
         await state.manager.stop()
         state.runtime_config.telemetry.emit_nowait({"event": "proxy_shutdown_complete"})
@@ -327,10 +359,23 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
         data = build_health()
         return JSONResponse({"upstreams": data["upstreams"], "uptime_s": data["uptime_s"], "version": data["version"]})
 
+    def _dashboard_html() -> str:
+        dist_index = dist_root / "index.html"
+        if dist_index.is_file():
+            return dist_index.read_text(encoding="utf-8")
+        legacy = web_root / "templates" / "admin.html"
+        if legacy.is_file():
+            return legacy.read_text(encoding="utf-8")
+        return (
+            "<!doctype html><meta charset='utf-8'><title>MCPy Admin</title>"
+            "<h1>MCPy Admin</h1><p>Dashboard assets are not built. "
+            "Run <code>cd frontend &amp;&amp; npm install &amp;&amp; npm run build</code>.</p>"
+        )
+
     @app.get("/admin", response_class=HTMLResponse)
     async def admin_index(request: Request) -> HTMLResponse:
         require_admin_auth(request)
-        return HTMLResponse((web_root / "templates" / "admin.html").read_text(encoding="utf-8"))
+        return HTMLResponse(_dashboard_html())
 
     @app.get("/admin/api/config")
     async def admin_api_config(request: Request) -> JSONResponse:
@@ -375,5 +420,143 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
     async def admin_api_logs(request: Request, upstream: str | None = None, level: str | None = None) -> JSONResponse:
         require_admin_auth(request)
         return JSONResponse(await call_admin_method("admin.get_logs", {"upstream": upstream, "level": level}))
+
+    @app.get("/admin/api/traffic")
+    async def admin_api_traffic(
+        request: Request,
+        limit: int = 200,
+        upstream: str | None = None,
+        method: str | None = None,
+        status: str | None = None,
+    ) -> JSONResponse:
+        require_admin_auth(request)
+        limit = max(1, min(limit, 2000))
+        return JSONResponse(
+            {
+                "items": state.traffic.recent(
+                    limit=limit, upstream=upstream, method=method, status=status
+                )
+            }
+        )
+
+    @app.get("/admin/api/traffic/stream")
+    async def admin_api_traffic_stream(request: Request) -> StreamingResponse:
+        require_admin_auth(request)
+        # Register the subscription synchronously, before the response body
+        # starts streaming, so we cannot miss records that arrive between
+        # the initial snapshot and the first await.
+        subscription = state.traffic.subscribe()
+
+        async def event_source() -> AsyncIterator[bytes]:
+            try:
+                recent = state.traffic.recent(limit=100)
+                yield f"event: snapshot\ndata: {json.dumps({'items': recent})}\n\n".encode("utf-8")
+                while True:
+                    try:
+                        rec = await asyncio.wait_for(subscription.get(), timeout=15.0)
+                    except asyncio.TimeoutError:
+                        yield b": heartbeat\n\n"
+                        continue
+                    if await request.is_disconnected():
+                        return
+                    payload = json.dumps(rec.to_dict())
+                    yield f"data: {payload}\n\n".encode("utf-8")
+            finally:
+                subscription.close()
+
+        return StreamingResponse(
+            event_source(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.get("/admin/api/metrics")
+    async def admin_api_metrics(request: Request) -> JSONResponse:
+        require_admin_auth(request)
+        metrics = state.traffic.metrics()
+        metrics["uptime_s"] = round(time.time() - state.started_at, 3)
+        return JSONResponse(metrics)
+
+    @app.get("/admin/api/routes")
+    async def admin_api_routes(request: Request) -> JSONResponse:
+        require_admin_auth(request)
+        return JSONResponse(state.route_discovery.snapshot())
+
+    @app.post("/admin/api/routes/refresh")
+    async def admin_api_routes_refresh(request: Request) -> JSONResponse:
+        require_admin_auth(request)
+        await state.route_discovery.refresh_now()
+        return JSONResponse(state.route_discovery.snapshot())
+
+    @app.get("/admin/api/policies")
+    async def admin_api_policies_get(request: Request) -> JSONResponse:
+        require_admin_auth(request)
+        return JSONResponse(
+            state.runtime_config.config.policies.model_dump(by_alias=True, mode="json")
+        )
+
+    @app.post("/admin/api/policies")
+    async def admin_api_policies_set(request: Request) -> JSONResponse:
+        require_admin_auth(request)
+        body = await request.json()
+        policies = body.get("policies", body)
+        # Merge with the rest of the live raw config so the apply pipeline
+        # validates a complete document and the existing diff/rollback
+        # behavior covers the change.
+        merged = deepcopy(state.raw_config)
+        merged["policies"] = policies
+        result = await state.runtime_config.apply(
+            merged,
+            dry_run=bool(body.get("dry_run", False)),
+            source="admin.api.policies",
+        )
+        return JSONResponse(result)
+
+    @app.get("/admin/api/install/clients")
+    async def admin_api_install_clients(request: Request) -> JSONResponse:
+        require_admin_auth(request)
+        return JSONResponse({"clients": list_clients()})
+
+    @app.get("/admin/api/install/{client}")
+    async def admin_api_install_snippet(
+        request: Request,
+        client: str,
+        url: str | None = None,
+        token_env: str | None = None,
+        upstream: str | None = None,
+        name: str = "mcpy",
+    ) -> JSONResponse:
+        require_admin_auth(request)
+        try:
+            adapter = get_adapter(client)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        opts = InstallOptions(
+            name=name,
+            url=url or "http://127.0.0.1:8000",
+            token_env=token_env or state.runtime_config.config.auth.token_env,
+            upstream=upstream,
+        )
+        return JSONResponse(
+            {
+                "client": client,
+                "supports_auto_install": adapter.supports_auto_install(),
+                "entry": adapter.format_entry(opts),
+                "merged": adapter.merge(None, opts),
+                "config_paths": [str(p) for p in adapter.default_config_paths()],
+            }
+        )
+
+    # SPA catch-all registered LAST so specific /admin/api/* and /admin/static/*
+    # routes match first. Handles deep-link navigation like /admin/traffic.
+    @app.get("/admin/{path:path}", response_class=HTMLResponse)
+    async def admin_spa(request: Request, path: str) -> HTMLResponse:
+        if path.startswith("api/") or path.startswith("static/"):
+            raise HTTPException(status_code=404, detail="not_found")
+        require_admin_auth(request)
+        return HTMLResponse(_dashboard_html())
 
     return app

@@ -50,8 +50,46 @@ Model Context Protocol (MCP) is a protocol for tool/server interoperability. In 
 python -m venv .venv
 source .venv/bin/activate
 pip install -e .[dev]
-cp config.example.json config.json
-mcp-proxy --config config.json
+
+# Generate a starter config
+mcp-proxy init --output config.json
+
+# Run the proxy + dashboard
+export MCP_PROXY_TOKEN=$(openssl rand -hex 16)
+mcp-proxy serve --config config.json
+```
+
+The dashboard is now available at <http://127.0.0.1:8000/admin> (use the
+bearer token above to sign in).
+
+## Connecting Claude / ChatGPT
+
+```bash
+# One-line install for Claude Desktop (uses the bundled stdio adapter)
+mcp-proxy install --client claude-desktop --url http://127.0.0.1:8000 \
+  --token-env MCP_PROXY_TOKEN
+
+# Claude Code (HTTP transport)
+mcp-proxy install --client claude-code --url http://127.0.0.1:8000 \
+  --token-env MCP_PROXY_TOKEN
+
+# ChatGPT — prints a snippet to paste into the connector UI
+mcp-proxy install --client chatgpt --url http://127.0.0.1:8000
+```
+
+The dashboard's **Connect** page (`/admin/connect`) shows the same
+snippets and the exact `mcp-proxy install` command for each client.
+
+## Building the dashboard
+
+The dashboard is built from `frontend/` (React + Vite + Tailwind) and the
+compiled assets are committed under `src/mcp_proxy/web/dist/` so
+`pip install` ships a working UI. To rebuild after editing the frontend:
+
+```bash
+cd frontend
+npm install
+npm run build
 ```
 
 ## Configuration Examples
