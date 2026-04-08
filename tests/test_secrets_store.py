@@ -127,18 +127,35 @@ async def test_persistence_with_wrong_key_raises(tmp_path: Path) -> None:
     assert wrong != key
     with pytest.raises(SecretStoreError) as exc_info:
         SecretsManager(state_dir=tmp_path, key_override=wrong)
-    assert "cannot decrypt" in str(exc_info.value)
+    assert "cannot be decrypted" in str(exc_info.value)
 
 
 @pytest.mark.asyncio
-async def test_secrets_file_is_actually_ciphertext(tmp_path: Path) -> None:
+async def test_secrets_db_row_is_actually_ciphertext(tmp_path: Path) -> None:
+    """The DB stores ciphertext, not plaintext, even though the column
+    is structured: a hex dump of the SQLite file must not contain the
+    plaintext value, and the ``value_ct`` column round-trips through
+    Fernet (the token starts with 0x80 → ``gAAAAA`` in base64).
+    """
+    from sqlalchemy import select
+    from mcp_proxy.storage.schema import secrets_table
+
     store = SecretsManager(state_dir=tmp_path, key_override=SecretsManager.generate_key())
     await store.set("nuclear", "launch-code-4782")
-    raw = (tmp_path / "secrets.json").read_bytes()
-    # A Fernet token begins with the version byte 0x80 (base64: "gAAAAA")
-    # and must NOT contain the plaintext value.
+
+    # The whole on-disk SQLite file must not contain the plaintext.
+    db_path = tmp_path / "mcpy.db"
+    raw = db_path.read_bytes()
     assert b"launch-code-4782" not in raw
-    assert raw[:6] == b"gAAAAA"
+
+    # And the ``value_ct`` column for that secret is a Fernet token.
+    with store.store.engine.connect() as conn:
+        row = conn.execute(
+            select(secrets_table.c.value_ct).where(secrets_table.c.name == "nuclear")
+        ).first()
+    assert row is not None
+    blob = bytes(row[0])
+    assert blob[:6] == b"gAAAAA"
 
 
 @pytest.mark.asyncio
@@ -159,15 +176,21 @@ async def test_auto_generated_key_persists(tmp_path: Path, monkeypatch: pytest.M
 
 @pytest.mark.asyncio
 async def test_env_key_preferred_over_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When ``MCPY_SECRETS_KEY`` is set, the file fallback path must NOT
+    be touched. We assert that no ``secrets.key`` file is written and
+    that constructing a fresh manager with a *different* env key against
+    the same DB file raises (because the existing rows decrypt with the
+    original key only).
+    """
     env_key = SecretsManager.generate_key()
     monkeypatch.setenv("MCPY_SECRETS_KEY", env_key)
     store = SecretsManager(state_dir=tmp_path)
-    # The env key should be the one in use; file-based fallback should NOT
-    # have been consulted and the fallback key file should not exist.
     assert not (tmp_path / "secrets.key").exists()
     await store.set("x", "y")
-    # A fresh manager with a different env key (and no file to fall back
-    # to) should fail to decrypt.
+    store.close()
+
+    # A fresh manager with a different env key against the same DB file
+    # should fail to decrypt the existing row.
     monkeypatch.setenv("MCPY_SECRETS_KEY", SecretsManager.generate_key())
     with pytest.raises(SecretStoreError):
         SecretsManager(state_dir=tmp_path)

@@ -31,6 +31,12 @@ dependencies = [
   # (src/mcp_proxy/secrets.py) used for upstream credentials and
   # OAuth tokens at rest.
   "cryptography>=42.0",
+  # Persistent config + secrets store. SQLAlchemy Core (no ORM) gives us
+  # a database-agnostic surface so operators can point MCPY_DB_URL at
+  # any SQLAlchemy-supported backend. The default sqlite:///<state_dir>/mcpy.db
+  # uses the stdlib sqlite3 driver and works out of the box; operators
+  # running postgres or mysql install psycopg2/PyMySQL themselves.
+  "sqlalchemy>=2.0",
 ]
 
 [project.optional-dependencies]

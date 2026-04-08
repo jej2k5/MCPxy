@@ -90,30 +90,57 @@ async def test_admin_apply_config_updates_upstream_diff() -> None:
 
 
 @pytest.mark.asyncio
-async def test_file_watcher_reload(tmp_path) -> None:
-    config_path = tmp_path / "config.json"
-    config_path.write_text(json.dumps({"upstreams": {"a": {"type": "dummy", "url": "http://x"}}}))
+async def test_runtime_apply_persists_to_store(tmp_path) -> None:
+    """Verify the runtime applier writes through to the ConfigStore.
+
+    The file-mtime watcher that the previous version of this test
+    exercised has been removed: with the DB as the canonical store
+    there is no file to poll, so callers go through ``apply()`` (or
+    the admin API, which calls ``apply()``) and we just need to know
+    that ``apply()`` actually persists the new payload alongside
+    bumping the in-memory state.
+    """
+    from cryptography.fernet import Fernet
+
+    from mcp_proxy.storage.config_store import ConfigStore
+    from mcp_proxy.storage.db import build_engine, run_migrations
+
+    engine = build_engine(f"sqlite:///{tmp_path / 'mcpy.db'}")
+    run_migrations(engine)
+    store = ConfigStore(engine, Fernet(Fernet.generate_key()))
+    store.load_all()
 
     registry = PluginRegistry()
     registry.upstreams["dummy"] = DummyTransport
-    cfg = AppConfig.model_validate(json.loads(config_path.read_text()))
-    raw = json.loads(config_path.read_text())
+    raw = {"upstreams": {"a": {"type": "dummy", "url": "http://x"}}}
+    cfg = AppConfig.model_validate(raw)
     manager = UpstreamManager(raw["upstreams"], registry)
-    runtime = RuntimeConfigManager(raw, cfg, manager, TelemetryPipeline(NoopTelemetrySink()), registry, config_path=str(config_path), poll_interval_s=0.05)
-
+    runtime = RuntimeConfigManager(
+        raw,
+        cfg,
+        manager,
+        TelemetryPipeline(NoopTelemetrySink()),
+        registry,
+        store=store,
+    )
     await manager.start()
-    await runtime.start()
 
-    await asyncio.sleep(0.06)
-    config_path.write_text(json.dumps({"upstreams": {"a": {"type": "dummy", "url": "http://changed"}}}))
-
-    deadline = asyncio.get_running_loop().time() + 1.0
-    while runtime.config.upstreams["a"]["url"] != "http://changed" and asyncio.get_running_loop().time() < deadline:
-        await asyncio.sleep(0.05)
+    next_payload = {"upstreams": {"a": {"type": "dummy", "url": "http://changed"}}}
+    result = await runtime.apply(next_payload, source="test")
+    assert result["applied"] is True
+    assert result["diff"]["version"] == 1
     assert runtime.config.upstreams["a"]["url"] == "http://changed"
 
-    await runtime.stop()
+    # The store now reflects the new payload, and a fresh ConfigStore
+    # with the same engine reads it back identically.
+    persisted = store.get_active_config()
+    assert persisted == next_payload
+    assert store.active_version() == 1
+    history = store.list_config_history()
+    assert history[0]["version"] == 1
+    assert history[0]["source"] == "test"
     await manager.stop()
+    store.close()
 
 
 def test_telemetry_config_spec_fields_and_env_expansion(tmp_path, monkeypatch) -> None:

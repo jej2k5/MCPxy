@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -13,17 +14,35 @@ from typing import Any
 import uvicorn
 
 from mcp_proxy.auth.oauth import OAuthManager
-from mcp_proxy.config import load_config
+from mcp_proxy.config import AppConfig, load_config
 from mcp_proxy.discovery.catalog import load_catalog
 from mcp_proxy.discovery.importers import IMPORTERS, discover_all, get_importer
 from mcp_proxy.install.clients import InstallOptions, get_adapter, list_clients
 from mcp_proxy.proxy.bridge import ProxyBridge
 from mcp_proxy.plugins.registry import PluginRegistry
 from mcp_proxy.proxy.manager import UpstreamManager
-from mcp_proxy.secrets import SecretsManager
+from mcp_proxy.secrets import SecretsManager, load_fernet
 from mcp_proxy.server import AppState, create_app
 from mcp_proxy.stdio_adapter import run_stdio_adapter
+from mcp_proxy.storage.config_store import ConfigStore, open_store
+from mcp_proxy.storage.db import _default_state_dir
 from mcp_proxy.telemetry.pipeline import TelemetryPipeline
+
+logger = logging.getLogger(__name__)
+
+
+_DEFAULT_BOOTSTRAP_CONFIG: dict[str, Any] = {
+    "default_upstream": None,
+    "auth": {"token_env": "MCP_PROXY_TOKEN"},
+    "admin": {
+        "mount_name": "__admin__",
+        "enabled": True,
+        "require_token": True,
+        "allowed_clients": [],
+    },
+    "telemetry": {"enabled": True, "sink": "noop"},
+    "upstreams": {},
+}
 
 
 def parse_listen(value: str) -> tuple[str, int]:
@@ -40,17 +59,99 @@ def parse_listen(value: str) -> tuple[str, int]:
     return host, port
 
 
-def build_state(config_path: str) -> AppState:
-    """Build app state from config file."""
-    raw_config = json.loads(open(config_path, "r", encoding="utf-8").read())
+def _bootstrap_config_payload(
+    store: ConfigStore,
+    seed_path: str | None,
+) -> tuple[dict[str, Any], str]:
+    """Resolve the initial config payload from the DB or a seed file.
 
-    # Secrets manager is constructed first so ${secret:NAME} placeholders in
-    # the config file expand correctly. State dir is picked from
-    # MCPY_STATE_DIR with sane defaults (/var/lib/mcpy in the container,
-    # ~/.local/state/mcpy in local dev) — deployment concern, not config.
-    state_dir_override = __import__("os").getenv("MCPY_STATE_DIR")
-    secrets_manager = SecretsManager(state_dir=state_dir_override)
-    config = load_config(config_path, secrets=secrets_manager.get)
+    Returns ``(payload, source_label)``. ``source_label`` is one of:
+
+    - ``"db"``                 — DB already had an active config; seed
+                                  path (if any) is ignored on subsequent
+                                  starts.
+    - ``"seed:<path>"``        — DB was empty and the seed file existed,
+                                  so we imported it. The seed file is then
+                                  renamed to ``<path>.migrated`` so nobody
+                                  thinks they can still edit it.
+    - ``"default"``            — neither the DB nor a seed file is
+                                  available; we wrote a minimal default
+                                  so the proxy can start. Operators are
+                                  expected to populate it via the admin
+                                  API or ``mcp-proxy register`` next.
+    """
+    existing = store.get_active_config()
+    if existing is not None:
+        if seed_path:
+            logger.info(
+                "config: DB already populated (version %d); ignoring --config %s",
+                store.active_version(),
+                seed_path,
+            )
+        return existing, "db"
+
+    if seed_path and Path(seed_path).is_file():
+        raw = json.loads(Path(seed_path).read_text(encoding="utf-8"))
+        store.save_active_config(raw, source=f"bootstrap:{seed_path}")
+        try:
+            migrated_path = Path(seed_path).with_suffix(
+                Path(seed_path).suffix + ".migrated"
+            )
+            Path(seed_path).rename(migrated_path)
+            logger.info(
+                "config: imported %s into DB (version %d); renamed file to %s",
+                seed_path,
+                store.active_version(),
+                migrated_path,
+            )
+        except OSError as exc:
+            logger.warning(
+                "config: imported %s into DB but could not rename file: %s",
+                seed_path,
+                exc,
+            )
+        return store.get_active_config() or raw, f"seed:{seed_path}"
+
+    # Last resort: write a minimal default so the proxy can start. The
+    # operator must add upstreams via the admin API.
+    payload = json.loads(json.dumps(_DEFAULT_BOOTSTRAP_CONFIG))
+    store.save_active_config(payload, source="bootstrap:default")
+    logger.warning(
+        "config: DB empty and no --config seed provided; wrote a minimal "
+        "default config (version %d). Use the admin API or "
+        "`mcp-proxy register` to add upstreams.",
+        store.active_version(),
+    )
+    return payload, "default"
+
+
+def build_state(config_path: str | None) -> AppState:
+    """Build app state from the persistent ConfigStore.
+
+    On the first run after upgrading from a file-based deployment we
+    auto-import ``config_path`` and ``<state_dir>/secrets.json`` into
+    the DB and then ignore them on subsequent starts. The Fernet key
+    file (or ``MCPY_SECRETS_KEY``) is unchanged — see ``secrets.py``
+    for the rationale.
+    """
+    state_dir_override = os.getenv("MCPY_STATE_DIR")
+    state_dir = Path(state_dir_override) if state_dir_override else _default_state_dir()
+    state_dir.mkdir(parents=True, exist_ok=True)
+
+    # Load the Fernet cipher first; both ConfigStore and SecretsManager
+    # need it, and we want exactly one cipher instance shared across them.
+    fernet = load_fernet(state_dir)
+    db_url = os.getenv("MCPY_DB_URL")
+    store = open_store(db_url, fernet=fernet)
+
+    raw_config, source_label = _bootstrap_config_payload(store, config_path)
+
+    # SecretsManager wraps the same store so secrets writes from the
+    # admin API and OAuth flows land in one DB, one Fernet, one cache.
+    secrets_manager = SecretsManager(
+        state_dir=state_dir, config_store=store
+    )
+    config = AppConfig.model_validate(_expand_for_bootstrap(raw_config, secrets_manager))
 
     registry = PluginRegistry()
     registry.load_entry_points()
@@ -73,17 +174,36 @@ def build_state(config_path: str) -> AppState:
         batch_size=config.telemetry.batch_size,
         flush_interval_ms=config.telemetry.flush_interval_ms,
     )
-    return AppState(
+    state = AppState(
         config,
         raw_config,
         manager,
         bridge,
         telemetry,
         registry=registry,
-        config_path=config_path,
+        config_path=config_path if source_label.startswith("seed:") else None,
         secrets_manager=secrets_manager,
         oauth_manager=oauth_manager,
+        config_store=store,
     )
+    state.bootstrap_source = source_label  # type: ignore[attr-defined]
+    return state
+
+
+def _expand_for_bootstrap(
+    raw_config: dict[str, Any], secrets_manager: SecretsManager
+) -> dict[str, Any]:
+    """Apply ${env:FOO} + ${secret:NAME} expansion at bootstrap time.
+
+    Mirrors what ``load_config`` does for file-based loads, but takes a
+    pre-parsed dict (the DB column already holds parsed JSON) so we
+    don't double-decode. Returns a fresh dict so the caller can keep the
+    original around as ``raw_config`` for the runtime apply path.
+    """
+    from mcp_proxy.config import _apply_expansions
+    from copy import deepcopy
+
+    return _apply_expansions(deepcopy(raw_config), secrets=secrets_manager.get)
 
 
 # ---------------------------------------------------------------------------
@@ -457,7 +577,15 @@ def main(argv: list[str] | None = None) -> int:
 
     serve = subparsers.add_parser("serve", help="Run the MCP proxy server")
     serve.add_argument("--listen", type=parse_listen, default=parse_listen("127.0.0.1:8000"))
-    serve.add_argument("--config", required=True)
+    # ``--config`` is now a one-shot bootstrap seed: imported into the DB
+    # if (and only if) the DB has no active config yet, then renamed to
+    # ``<path>.migrated`` so subsequent restarts use the DB exclusively.
+    # Optional once the DB is populated.
+    serve.add_argument(
+        "--config",
+        default=None,
+        help="Optional one-shot config seed file imported into the DB on first run",
+    )
     serve.add_argument("--log-level", default="info")
     serve.add_argument("--health-path", default="/health")
     serve.add_argument("--request-timeout", type=float, default=30.0)
@@ -603,8 +731,194 @@ def main(argv: list[str] | None = None) -> int:
     )
     catalog_install.set_defaults(func=cmd_catalog_install)
 
+    # ----------------------------------------------------------------------
+    # `config` — DB import/export for the active AppConfig payload
+    # ----------------------------------------------------------------------
+
+    config_cmd = subparsers.add_parser(
+        "config",
+        help="Manage the persisted AppConfig in the local DB",
+    )
+    config_sub = config_cmd.add_subparsers(dest="config_command", required=True)
+
+    config_show = config_sub.add_parser(
+        "show", help="Print the active config from the DB as JSON"
+    )
+    config_show.set_defaults(func=cmd_config_show)
+
+    config_import = config_sub.add_parser(
+        "import",
+        help="Import a JSON config file into the DB (overwrites the active config)",
+    )
+    config_import.add_argument("path", help="Path to a JSON file matching AppConfig")
+    config_import.add_argument(
+        "--source",
+        default="cli.config_import",
+        help="Source label written into config_history",
+    )
+    config_import.set_defaults(func=cmd_config_import)
+
+    config_export = config_sub.add_parser(
+        "export",
+        help="Write the active DB config out to a JSON file",
+    )
+    config_export.add_argument("path", help="Output path (will be overwritten)")
+    config_export.set_defaults(func=cmd_config_export)
+
+    config_history_cmd = config_sub.add_parser(
+        "history", help="List recent applies from the DB history table"
+    )
+    config_history_cmd.add_argument(
+        "--limit", type=int, default=20, help="Max rows to return (default 20)"
+    )
+    config_history_cmd.set_defaults(func=cmd_config_history)
+
+    # ----------------------------------------------------------------------
+    # `secrets` — DB-backed secrets management
+    # ----------------------------------------------------------------------
+
+    secrets_cmd = subparsers.add_parser(
+        "secrets",
+        help="Manage encrypted secrets in the local DB",
+    )
+    secrets_sub = secrets_cmd.add_subparsers(dest="secrets_command", required=True)
+
+    secrets_list = secrets_sub.add_parser(
+        "list", help="List secret names + metadata (values are never printed)"
+    )
+    secrets_list.add_argument("--json", action="store_true")
+    secrets_list.set_defaults(func=cmd_secrets_list)
+
+    secrets_set = secrets_sub.add_parser(
+        "set", help="Create or rotate a secret value"
+    )
+    secrets_set.add_argument("name")
+    secrets_set.add_argument(
+        "--value",
+        default=None,
+        help="Secret value (default: read from MCPY_SECRET_VALUE env or stdin)",
+    )
+    secrets_set.add_argument("--description", default="")
+    secrets_set.set_defaults(func=cmd_secrets_set)
+
+    secrets_delete = secrets_sub.add_parser("delete", help="Delete a secret")
+    secrets_delete.add_argument("name")
+    secrets_delete.set_defaults(func=cmd_secrets_delete)
+
     args = parser.parse_args(argv)
     return int(args.func(args) or 0)
+
+
+# ---------------------------------------------------------------------------
+# `config` subcommand implementations
+# ---------------------------------------------------------------------------
+
+
+def _open_local_store() -> ConfigStore:
+    state_dir = (
+        Path(os.getenv("MCPY_STATE_DIR")) if os.getenv("MCPY_STATE_DIR") else _default_state_dir()
+    )
+    fernet = load_fernet(state_dir)
+    return open_store(os.getenv("MCPY_DB_URL"), fernet=fernet)
+
+
+def cmd_config_show(args: argparse.Namespace) -> int:
+    store = _open_local_store()
+    payload = store.get_active_config()
+    if payload is None:
+        print("(DB has no active config)", file=sys.stderr)
+        return 1
+    print(json.dumps(payload, indent=2))
+    return 0
+
+
+def cmd_config_import(args: argparse.Namespace) -> int:
+    path = Path(args.path)
+    if not path.is_file():
+        print(f"file not found: {path}", file=sys.stderr)
+        return 2
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        print(f"invalid JSON in {path}: {exc}", file=sys.stderr)
+        return 2
+    store = _open_local_store()
+    version = store.save_active_config(payload, source=args.source)
+    print(f"imported {path} into DB at version {version}")
+    return 0
+
+
+def cmd_config_export(args: argparse.Namespace) -> int:
+    store = _open_local_store()
+    payload = store.get_active_config()
+    if payload is None:
+        print("(DB has no active config)", file=sys.stderr)
+        return 1
+    out = Path(args.path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    print(f"wrote {out} (version {store.active_version()})")
+    return 0
+
+
+def cmd_config_history(args: argparse.Namespace) -> int:
+    store = _open_local_store()
+    rows = store.list_config_history(limit=args.limit)
+    print(json.dumps(rows, indent=2, default=str))
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# `secrets` subcommand implementations
+# ---------------------------------------------------------------------------
+
+
+def cmd_secrets_list(args: argparse.Namespace) -> int:
+    store = _open_local_store()
+    items = store.list_public_secrets()
+    if args.json:
+        print(json.dumps(items, indent=2))
+        return 0
+    if not items:
+        print("(no secrets)")
+        return 0
+    for entry in items:
+        ts = entry.get("updated_at") or 0.0
+        print(
+            f"{entry['name']:<32} {entry['value_preview']:<20} updated={ts:.0f} "
+            f"len={entry['value_length']} {entry.get('description') or ''}".rstrip()
+        )
+    return 0
+
+
+def cmd_secrets_set(args: argparse.Namespace) -> int:
+    value: str | None = args.value
+    if value is None:
+        value = os.getenv("MCPY_SECRET_VALUE")
+    if value is None:
+        if sys.stdin.isatty():
+            print(
+                f"reading value for secret {args.name!r} from stdin (Ctrl-D to end):",
+                file=sys.stderr,
+            )
+        value = sys.stdin.read().rstrip("\n")
+    if not value:
+        print("refusing to write empty secret value", file=sys.stderr)
+        return 2
+    store = _open_local_store()
+    rec = store.upsert_secret(args.name, value, description=args.description)
+    print(f"set {rec.name} (length={len(value)})")
+    return 0
+
+
+def cmd_secrets_delete(args: argparse.Namespace) -> int:
+    store = _open_local_store()
+    removed = store.delete_secret(args.name)
+    if not removed:
+        print(f"secret {args.name!r} not found", file=sys.stderr)
+        return 1
+    print(f"deleted {args.name}")
+    return 0
 
 
 if __name__ == "__main__":

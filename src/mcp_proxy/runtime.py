@@ -1,13 +1,32 @@
-"""Runtime configuration reload and change application."""
+"""Runtime configuration application — DB-backed.
+
+The runtime config manager owns the in-memory ``AppConfig`` and is the
+single chokepoint for replacing it. Compared to the file-based
+predecessor:
+
+- The mtime-polling file watcher is **gone**. The DB is the source of
+  truth, and admin API writes land there directly. Operators who used
+  to ``vim config.json`` now go through the dashboard or the
+  ``mcp-proxy`` CLI subcommands (``register``, ``catalog install``,
+  ``config import``).
+- ``apply()`` persists every successful swap to ``ConfigStore`` before
+  acknowledging it. The history table gives us audit + rollback for
+  free.
+- ``ConfigStore`` is optional — tests that exercise rollback or hot
+  reload semantics can construct a manager without one and the persist
+  step is skipped. Production paths always supply one (the CLI builds
+  it in ``cli.build_state``).
+
+Everything else (atomicity, rollback on transport-start failure,
+${secret:NAME} pre-validation, the post-apply hook used by AppState to
+re-sync OAuthManager) is unchanged.
+"""
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import json
 import logging
 from copy import deepcopy
-from pathlib import Path
 from typing import Any, Callable
 
 from mcp_proxy.config import (
@@ -20,13 +39,21 @@ from mcp_proxy.config import (
 from mcp_proxy.plugins.registry import PluginRegistry
 from mcp_proxy.policy.engine import PolicyEngine
 from mcp_proxy.proxy.manager import UpstreamManager
+from mcp_proxy.storage.config_store import ConfigStore
 from mcp_proxy.telemetry.pipeline import TelemetryPipeline
 
 logger = logging.getLogger(__name__)
 
 
 class RuntimeConfigManager:
-    """Apply config updates atomically and optionally watch a config file for changes."""
+    """Apply config updates atomically and persist them to the store.
+
+    The historical ``config_path`` argument is preserved for backwards
+    compatibility but is now informational only — the file is never
+    polled and never written. Pass a ``store`` argument to actually
+    persist applies; without one, the manager runs in "in-memory only"
+    mode (used by tests that don't care about persistence).
+    """
 
     def __init__(
         self,
@@ -40,65 +67,47 @@ class RuntimeConfigManager:
         policy_engine: PolicyEngine | None = None,
         secrets_resolver: SecretResolver | None = None,
         on_config_applied: Callable[[AppConfig], None] | None = None,
+        store: ConfigStore | None = None,
     ) -> None:
         self.raw_config = raw_config
         self.config = config
         self.manager = manager
         self.telemetry = telemetry
         self.registry = registry
+        # Kept around for diagnostics / migration logging only.
         self.config_path = config_path
+        # Reserved for tests that still pass it; ignored by the runtime.
         self.poll_interval_s = poll_interval_s
         self.policy_engine = policy_engine
-        # Resolver for ${secret:NAME} placeholders used at apply time. The
-        # server's AppState wires this to SecretsManager.get; tests and
-        # simple call sites can leave it None and lose only secret support.
+        # Resolver for ${secret:NAME} placeholders used at apply time.
+        # Production callers wire this to ``store.get_secret`` so the
+        # same ConfigStore that persists secrets also resolves them.
         self.secrets_resolver = secrets_resolver
-        # Optional post-apply hook: called with the *new* AppConfig after
-        # a successful apply. Used by AppState to sync dependent state
-        # (e.g. OAuthManager upstream registrations) without needing the
-        # runtime manager to know about auth.
+        # Optional post-apply hook fired with the new AppConfig on
+        # successful applies. AppState uses it to re-sync OAuthManager
+        # upstream registrations across hot-reloads.
         self.on_config_applied: Callable[[AppConfig], None] | None = on_config_applied
+        self.store = store
         self._lock = asyncio.Lock()
-        self._watch_task: asyncio.Task[None] | None = None
-        self._last_mtime_ns: int | None = None
 
     async def start(self) -> None:
-        if not self.config_path:
-            return
-        path = Path(self.config_path)
-        self._last_mtime_ns = path.stat().st_mtime_ns if path.exists() else None
-        self._watch_task = asyncio.create_task(self._watch_loop())
+        """Lifecycle hook kept for compatibility with the file-watcher era.
+
+        With the DB as source of truth there's nothing to start watching:
+        admin API writes land in the store directly, and other processes
+        editing the same DB row aren't a use case the proxy supports.
+        """
+        return None
 
     async def stop(self) -> None:
-        if not self._watch_task:
-            return
-        self._watch_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await self._watch_task
+        return None
 
-    async def _watch_loop(self) -> None:
-        while True:
-            await asyncio.sleep(self.poll_interval_s)
-            path = Path(self.config_path or "")
-            try:
-                new_mtime = path.stat().st_mtime_ns
-            except FileNotFoundError:
-                continue
-            if self._last_mtime_ns == new_mtime:
-                continue
-            self._last_mtime_ns = new_mtime
-            try:
-                payload = json.loads(path.read_text(encoding="utf-8"))
-            except Exception as exc:
-                logger.error("Failed to parse config file reload: %s", exc)
-                continue
-            result = await self.apply(payload, source="file_watcher")
-            if not result.get("applied"):
-                logger.error("Config reload rejected: %s", result.get("error", "unknown error"))
-            else:
-                logger.info("Config reload applied via file watcher")
-
-    async def apply(self, candidate: dict[str, Any], dry_run: bool = False, source: str = "admin") -> dict[str, Any]:
+    async def apply(
+        self,
+        candidate: dict[str, Any],
+        dry_run: bool = False,
+        source: str = "admin",
+    ) -> dict[str, Any]:
         # Fail fast on unresolved ${secret:NAME} references: the expansion
         # layer would otherwise silently substitute an empty string, which
         # turns into a very confusing "my upstream just rejects all
@@ -143,6 +152,20 @@ class RuntimeConfigManager:
                 self.config = next_config
                 if self.policy_engine is not None:
                     self.policy_engine.replace_config(next_config)
+                if self.store is not None:
+                    # Persist the unexpanded payload so secret placeholders
+                    # are preserved across restarts. The store re-syncs the
+                    # denormalised upstreams table inside the same txn.
+                    try:
+                        version = self.store.save_active_config(
+                            candidate, source=source
+                        )
+                        diff["version"] = version
+                    except Exception as exc:  # pragma: no cover - defensive
+                        # Persistence failure rolls the in-memory state back
+                        # so the live config still matches the DB.
+                        logger.error("config persist failed: %s", exc)
+                        raise
                 if self.on_config_applied is not None:
                     try:
                         self.on_config_applied(next_config)

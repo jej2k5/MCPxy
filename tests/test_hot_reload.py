@@ -63,27 +63,27 @@ async def test_hot_reload_via_admin_apply() -> None:
 
 
 @pytest.mark.asyncio
-async def test_hot_reload_via_file_watcher(tmp_path) -> None:
-    config_path = tmp_path / "config.json"
-    config_path.write_text(json.dumps({"upstreams": {"a": {"type": "dummy", "url": "http://x"}}}))
-
+async def test_runtime_start_stop_is_a_noop_without_file_watcher() -> None:
+    """The mtime-polling file watcher was removed when config moved to
+    the DB; ``start()``/``stop()`` are kept for lifecycle compatibility
+    but must not spin up any background tasks. This regression guard
+    catches anyone who tries to bring it back without remembering that
+    the DB is now the source of truth.
+    """
     registry = PluginRegistry()
     registry.upstreams["dummy"] = DummyTransport
-    cfg = AppConfig.model_validate(json.loads(config_path.read_text()))
-    raw = json.loads(config_path.read_text())
+    raw = {"upstreams": {"a": {"type": "dummy", "url": "http://x"}}}
+    cfg = AppConfig.model_validate(raw)
     manager = UpstreamManager(raw["upstreams"], registry)
-    runtime = RuntimeConfigManager(raw, cfg, manager, TelemetryPipeline(NoopTelemetrySink()), registry, config_path=str(config_path), poll_interval_s=0.05)
-
+    runtime = RuntimeConfigManager(
+        raw, cfg, manager, TelemetryPipeline(NoopTelemetrySink()), registry,
+        config_path="/tmp/whatever-this-is-not-read-anymore",
+        poll_interval_s=0.05,
+    )
     await manager.start()
     await runtime.start()
-
-    await asyncio.sleep(0.06)
-    config_path.write_text(json.dumps({"upstreams": {"a": {"type": "dummy", "url": "http://watched"}}}))
-
-    deadline = asyncio.get_running_loop().time() + 1.0
-    while runtime.config.upstreams["a"]["url"] != "http://watched" and asyncio.get_running_loop().time() < deadline:
-        await asyncio.sleep(0.05)
-
-    assert runtime.config.upstreams["a"]["url"] == "http://watched"
+    # No background task scheduled. The runtime keeps no asyncio.Task
+    # references; only the apply() / store path mutates state now.
+    assert getattr(runtime, "_watch_task", None) is None
     await runtime.stop()
     await manager.stop()
