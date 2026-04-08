@@ -308,3 +308,105 @@ def test_bootstrap_writes_default_when_db_empty_and_no_seed(
         assert state.config.upstreams == {}
     finally:
         state.config_store.close()
+
+
+def test_bootstrap_seeds_onboarding_when_seed_config_has_no_resolvable_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fresh deployment with a seed config but no resolvable admin token.
+
+    Regression test for the Docker-deploy footgun: ``deploy/docker/config.json``
+    ships with ``auth.token_env = MCP_PROXY_TOKEN`` and ``require_token =
+    True`` but operators routinely forget to set the env var on first
+    ``docker compose up``. Before this fix the bootstrap only seeded the
+    onboarding row when ``source_label == "default"``, so the
+    seed-config path came up with no row, the frontend routed to
+    LoginGate, and the fail-closed middleware at ``server.py`` refused
+    every admin API call with 503 ``admin_token_not_configured`` —
+    leaving the operator stuck on a token prompt they couldn't satisfy.
+
+    The fix is to seed the onboarding row whenever the resolved config
+    has no bearer token, regardless of how the config was bootstrapped.
+    """
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("MCPY_STATE_DIR", str(state_dir))
+    monkeypatch.setenv("MCPY_SECRETS_KEY", Fernet.generate_key().decode("ascii"))
+    # Deliberately NOT setting MCP_PROXY_TOKEN — this is the whole point
+    # of the regression test.
+    monkeypatch.delenv("MCP_PROXY_TOKEN", raising=False)
+
+    seed = tmp_path / "config.json"
+    seed.write_text(
+        json.dumps(
+            {
+                "auth": {"token_env": "MCP_PROXY_TOKEN"},
+                "admin": {
+                    "mount_name": "__admin__",
+                    "enabled": True,
+                    "require_token": True,
+                    "allowed_clients": [],
+                },
+                "telemetry": {"enabled": True, "sink": "noop"},
+                "upstreams": {},
+            }
+        )
+    )
+
+    from mcp_proxy.cli import build_state
+
+    state = build_state(str(seed))
+    try:
+        # The seed path was taken, not the default bootstrap.
+        assert state.bootstrap_source == f"seed:{seed}"
+        # But because the resolved config has no admin token, the
+        # onboarding row must still be seeded so the wizard is
+        # reachable on the next request.
+        obstate = state.config_store.get_onboarding_state()
+        assert obstate is not None, (
+            "onboarding row should be auto-seeded when the bootstrapped "
+            "config has no resolvable admin token"
+        )
+        assert obstate.admin_token_set_at is None
+        assert obstate.completed_at is None
+    finally:
+        state.config_store.close()
+
+
+def test_bootstrap_does_not_seed_onboarding_when_token_is_resolvable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Counterpart to the no-token test: when the seed config DOES have
+    a resolvable bearer (env var is set), the onboarding row must not
+    be created. Operators who already have a token shouldn't get the
+    wizard hijacking their dashboard on boot.
+    """
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("MCPY_STATE_DIR", str(state_dir))
+    monkeypatch.setenv("MCPY_SECRETS_KEY", Fernet.generate_key().decode("ascii"))
+    monkeypatch.setenv("MCP_PROXY_TOKEN", "real-token-value")
+
+    seed = tmp_path / "config.json"
+    seed.write_text(
+        json.dumps(
+            {
+                "auth": {"token_env": "MCP_PROXY_TOKEN"},
+                "admin": {
+                    "mount_name": "__admin__",
+                    "enabled": True,
+                    "require_token": True,
+                    "allowed_clients": [],
+                },
+                "telemetry": {"enabled": True, "sink": "noop"},
+                "upstreams": {},
+            }
+        )
+    )
+
+    from mcp_proxy.cli import build_state
+
+    state = build_state(str(seed))
+    try:
+        assert state.bootstrap_source == f"seed:{seed}"
+        assert state.config_store.get_onboarding_state() is None
+    finally:
+        state.config_store.close()

@@ -14,7 +14,7 @@ from typing import Any
 import uvicorn
 
 from mcp_proxy.auth.oauth import OAuthManager
-from mcp_proxy.config import AppConfig, load_config
+from mcp_proxy.config import AppConfig, load_config, resolve_admin_token
 from mcp_proxy.discovery.catalog import load_catalog
 from mcp_proxy.discovery.importers import IMPORTERS, discover_all, get_importer
 from mcp_proxy.install.clients import InstallOptions, get_adapter, list_clients
@@ -153,18 +153,35 @@ def build_state(config_path: str | None) -> AppState:
 
     raw_config, source_label = _bootstrap_config_payload(store, config_path)
 
-    # Seed the onboarding row on fresh DBs so the wizard has a target.
-    # ``ensure_onboarding_row`` is idempotent — if the row already
-    # exists (subsequent starts) nothing happens.
-    if source_label == "default":
-        store.ensure_onboarding_row()
-
     # SecretsManager wraps the same store so secrets writes from the
     # admin API and OAuth flows land in one DB, one Fernet, one cache.
     secrets_manager = SecretsManager(
         state_dir=state_dir, config_store=store
     )
     config = AppConfig.model_validate(_expand_for_bootstrap(raw_config, secrets_manager))
+
+    # Seed the onboarding row whenever the proxy would otherwise come up
+    # with no resolvable admin token. That covers three bootstrap paths:
+    #
+    #   1. Default bootstrap — empty DB, no seed file. ``_bootstrap_config_payload``
+    #      wrote a minimal config with ``auth.token=None`` and
+    #      ``token_env=None`` so the wizard is reachable.
+    #   2. Seed-config bootstrap where the operator forgot the token —
+    #      common on Docker deploys that ship ``deploy/docker/config.json``
+    #      (which references ``MCP_PROXY_TOKEN``) but where the env var
+    #      was never set. Without this branch the onboarding row never
+    #      exists, the frontend routes to LoginGate, and the fail-closed
+    #      middleware returns 503 for every admin API call — leaving the
+    #      operator stuck on a token prompt they can't satisfy.
+    #   3. Future footguns where a config rollback or manual edit leaves
+    #      the proxy with no resolvable bearer.
+    #
+    # Uses the same ``resolve_admin_token`` helper as the fail-closed
+    # middleware (``server.py``) so the two stay in lockstep.
+    # ``ensure_onboarding_row`` is idempotent — a no-op on subsequent
+    # starts once a row already exists.
+    if resolve_admin_token(config.auth) is None:
+        store.ensure_onboarding_row()
 
     registry = PluginRegistry()
     registry.load_entry_points()
