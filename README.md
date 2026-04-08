@@ -141,6 +141,61 @@ SPA shell is public so the in-page login form can render; paste the
 bearer token above to sign in. Every `/admin/api/*` endpoint remains
 token-gated.
 
+## Running with Docker Compose
+
+The proxy (FastAPI backend + React dashboard) also ships as a single
+container image. Bring up the full stack with:
+
+```bash
+# optional: generate a token and persist it in a .env file
+echo "MCP_PROXY_TOKEN=$(openssl rand -hex 16)" > .env
+
+docker compose up -d --build
+docker compose logs -f mcpy
+```
+
+The container listens on `0.0.0.0:8000` and Compose publishes it on
+`http://127.0.0.1:8000` by default (override with `MCPY_HOST_PORT`).
+The dashboard is reachable at <http://127.0.0.1:8000/admin>.
+
+**What's mounted:**
+
+- `./deploy/docker/config.json` → `/etc/mcpy/config.json` (read-only).
+  Edit on the host; the runtime config watcher hot-reloads most
+  changes, otherwise `docker compose restart mcpy`.
+- Named volume `mcpy_data` → `/var/lib/mcpy` for runtime state (the
+  file-drop watcher directory, telemetry buffers, etc.).
+
+**Stdio upstreams work inside the container.** The image bundles Node
+(for `npx`-based catalog entries like `filesystem`, `github`,
+`puppeteer`) and `uv`/`uvx` (for Python-based entries like
+`mcp-server-git`), so everything in `mcp-proxy catalog list` is
+installable from the dashboard's Browse page with no host dependencies.
+
+**Desktop install helpers run on the host, not in the container.** The
+`mcp-proxy install --client claude-desktop ...` command writes to your
+host's client config files (Claude Desktop, Cursor, Continue, ...) and
+must execute on the host. After `docker compose up`, point those
+installers at the container with:
+
+```bash
+pip install mcpy-proxy     # host-side, just for the install CLI
+mcp-proxy install --client claude-desktop \
+  --url http://127.0.0.1:8000 --token-env MCP_PROXY_TOKEN
+```
+
+**Running one-shot CLI commands in the container.** Anything other than
+`serve` is forwarded straight through the entrypoint, so operator
+workflows like catalog browsing or runtime registration work via
+`docker compose run`:
+
+```bash
+docker compose run --rm mcpy catalog list
+docker compose run --rm mcpy register --name gh \
+  --stdio "npx -y @modelcontextprotocol/server-github" \
+  --url http://mcpy:8000
+```
+
 ## Dashboard tour
 
 | | |

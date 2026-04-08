@@ -1,0 +1,45 @@
+# MCPy Docker Compose deployment.
+#
+# Brings up the proxy (FastAPI backend + React dashboard) on :8000, with
+# the config file bind-mounted from deploy/docker/config.json and runtime
+# state persisted in the mcpy_data named volume.
+#
+# The desktop install helpers (`mcp-proxy install ...`) run on the HOST,
+# not in the container, because they write to host client config files
+# (Claude Desktop, Cursor, Continue, ...). After `docker compose up`, point
+# those installers at the running container with:
+#
+#     mcp-proxy install --client claude_desktop --url http://127.0.0.1:8000
+#
+# Set MCP_PROXY_TOKEN in a .env file (or the shell) to enable bearer auth;
+# leave it empty to run the proxy unauthenticated (dev only).
+
+services:
+  mcpy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mcpy:local
+    container_name: mcpy
+    restart: unless-stopped
+    ports:
+      - "${MCPY_HOST_PORT:-8000}:8000"
+    environment:
+      MCP_PROXY_TOKEN: ${MCP_PROXY_TOKEN:-}
+      MCPY_CONFIG: /etc/mcpy/config.json
+      MCPY_LISTEN: 0.0.0.0:8000
+    volumes:
+      # Config is bind-mounted read-only. Edit on the host; restart to apply
+      # anything the runtime config watcher doesn't hot-reload.
+      - ./deploy/docker/config.json:/etc/mcpy/config.json:ro
+      # Runtime state: file-drop watcher directory, telemetry buffers, etc.
+      - mcpy_data:/var/lib/mcpy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  mcpy_data:

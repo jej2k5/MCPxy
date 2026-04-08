@@ -1,0 +1,41 @@
+# Git + editor state
+.git
+.gitignore
+.gitattributes
+.github
+.idea
+.vscode
+*.swp
+
+# Python caches / virtualenvs
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.venv
+venv
+.pytest_cache
+.mypy_cache
+.ruff_cache
+htmlcov
+.coverage
+dist
+build
+
+# Tests and dev artefacts — not needed for the runtime image
+tests
+
+# Frontend: node_modules is reinstalled inside the build stage; dist is
+# re-emitted by that stage. Excluding both keeps the build context small
+# and avoids host-side stale builds from leaking into the image.
+frontend/node_modules
+frontend/dist
+src/mcp_proxy/web/dist
+
+# Local dev state
+*.log
+config.local.json
+config.local.yaml
+.env
+.env.*
+!.env.example
