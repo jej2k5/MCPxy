@@ -410,3 +410,56 @@ def test_bootstrap_does_not_seed_onboarding_when_token_is_resolvable(
         assert state.config_store.get_onboarding_state() is None
     finally:
         state.config_store.close()
+
+
+def test_bootstrap_seeds_onboarding_when_token_env_is_empty_string(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The live failure mode this fix targets: ``MCP_PROXY_TOKEN=""``.
+
+    ``docker-compose.yml`` expands ``${MCP_PROXY_TOKEN:-}`` to the empty
+    string when the operator hasn't populated ``.env``, so the container
+    env has ``MCP_PROXY_TOKEN=""`` (set but empty). A naive ``os.getenv``
+    returns ``""`` for that case, not ``None``, and the original
+    ``is None`` check in ``build_state`` let the onboarding row
+    creation slip through. Verifies the fix: ``resolve_admin_token``
+    treats empty env vars as unset, so bootstrap still seeds the row.
+    """
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("MCPY_STATE_DIR", str(state_dir))
+    monkeypatch.setenv("MCPY_SECRETS_KEY", Fernet.generate_key().decode("ascii"))
+    # The whole point: env var is present but empty.
+    monkeypatch.setenv("MCP_PROXY_TOKEN", "")
+
+    seed = tmp_path / "config.json"
+    seed.write_text(
+        json.dumps(
+            {
+                "auth": {"token_env": "MCP_PROXY_TOKEN"},
+                "admin": {
+                    "mount_name": "__admin__",
+                    "enabled": True,
+                    "require_token": True,
+                    "allowed_clients": [],
+                },
+                "telemetry": {"enabled": True, "sink": "noop"},
+                "upstreams": {},
+            }
+        )
+    )
+
+    from mcp_proxy.cli import build_state
+
+    state = build_state(str(seed))
+    try:
+        assert state.bootstrap_source == f"seed:{seed}"
+        obstate = state.config_store.get_onboarding_state()
+        assert obstate is not None, (
+            "onboarding row must be auto-seeded when MCP_PROXY_TOKEN is set "
+            "to the empty string (the default Docker Compose behaviour "
+            "when .env doesn't define it)"
+        )
+        assert obstate.admin_token_set_at is None
+        assert obstate.completed_at is None
+    finally:
+        state.config_store.close()
