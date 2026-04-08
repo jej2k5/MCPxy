@@ -1,0 +1,28 @@
+{
+  "default_upstream": null,
+  "auth": {
+    "token_env": "MCP_PROXY_TOKEN"
+  },
+  "admin": {
+    "mount_name": "__admin__",
+    "enabled": true,
+    "require_token": true,
+    "allowed_clients": []
+  },
+  "telemetry": {
+    "enabled": true,
+    "sink": "noop",
+    "batch_size": 50,
+    "flush_interval_ms": 2000,
+    "queue_max": 1000,
+    "drop_policy": "drop_newest"
+  },
+  "upstreams": {},
+  "policies": {
+    "global": {
+      "size": {
+        "max_request_bytes": 1048576
+      }
+    }
+  }
+}
