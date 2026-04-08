@@ -2,24 +2,108 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import httpx
 
+from mcp_proxy.auth.strategies import NoAuthStrategy, build_strategy
+from mcp_proxy.config import HttpUpstreamConfig, OAuth2AuthConfig
 from mcp_proxy.proxy.base import UpstreamTransport
+
+logger = logging.getLogger(__name__)
 
 
 class HttpUpstreamTransport(UpstreamTransport):
-    """JSON-RPC transport over HTTP POST."""
+    """JSON-RPC transport over HTTP POST.
+
+    Auth model:
+
+    * ``settings['headers']`` (dict) — free-form static headers merged
+      verbatim into the httpx client at start-time. Use this for non-auth
+      headers like ``X-Workspace-Id``, ``User-Agent``, etc.
+    * ``settings['auth']`` (HttpAuthConfig) — structured auth. Simple
+      types (``bearer``, ``api_key``, ``basic``, ``none``) are resolved
+      into static headers here and merged with the above. ``oauth2`` is
+      registered as a *dynamic* strategy on the shared
+      :class:`mcp_proxy.auth.oauth.OAuthManager` (if one was supplied via
+      ``settings['_oauth_manager']``) and attached per-request via an
+      httpx Auth object that refreshes tokens on expiry or 401 — see
+      :meth:`_make_oauth_client`.
+
+    Because the transport is constructed by
+    :class:`mcp_proxy.proxy.manager.UpstreamManager` from the plain
+    config dict, the runtime threads the OAuth manager in via a
+    settings-dict side channel (``_oauth_manager``) that's scrubbed
+    before ``model_validate`` would see it.
+    """
 
     def __init__(self, name: str, settings: dict[str, Any]) -> None:
         self.name = name
         self.url = settings["url"]
         self.timeout_s = float(settings.get("timeout_s", 30.0))
+        self.static_headers: dict[str, str] = {
+            str(k): str(v) for k, v in (settings.get("headers") or {}).items()
+        }
+        # Auth config arrives as a pydantic model (via manager._build_transport
+        # after AppConfig validation) or as a plain dict from tests. Normalise
+        # to a model once so we can pattern-match cleanly.
+        raw_auth = settings.get("auth")
+        self.auth_config = self._coerce_auth(raw_auth)
+        self._oauth_manager = settings.get("_oauth_manager")
+        self._auth_strategy = None  # lazily bound in start()
         self._client: httpx.AsyncClient | None = None
 
+    # ------------------------------------------------------------------
+    # Config normalization
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _coerce_auth(raw: Any) -> Any:
+        if raw is None:
+            return None
+        if hasattr(raw, "type"):
+            # Already a pydantic config object.
+            return raw
+        # Fall back to model validation so tests can pass a plain dict.
+        from pydantic import TypeAdapter
+
+        from mcp_proxy.config import HttpAuthConfig
+
+        return TypeAdapter(HttpAuthConfig).validate_python(raw)
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
     async def start(self) -> None:
-        self._client = httpx.AsyncClient(timeout=self.timeout_s)
+        merged_headers = dict(self.static_headers)
+        auth_obj: httpx.Auth | None = None
+
+        if isinstance(self.auth_config, OAuth2AuthConfig):
+            if self._oauth_manager is None:
+                raise RuntimeError(
+                    f"upstream {self.name!r}: oauth2 auth requires an "
+                    "OAuthManager wired through the runtime; none was supplied"
+                )
+            # Deferred import to avoid a startup cycle with secrets store
+            # construction in tests that don't exercise oauth at all.
+            from mcp_proxy.auth.oauth import OAuthHttpxAuth
+
+            auth_obj = OAuthHttpxAuth(
+                manager=self._oauth_manager, upstream=self.name
+            )
+        elif self.auth_config is not None:
+            self._auth_strategy = build_strategy(self.auth_config)
+            merged_headers.update(self._auth_strategy.static_headers())
+        else:
+            self._auth_strategy = NoAuthStrategy()
+
+        self._client = httpx.AsyncClient(
+            timeout=self.timeout_s,
+            headers=merged_headers or None,
+            auth=auth_obj,
+        )
 
     async def stop(self) -> None:
         if self._client:
@@ -29,6 +113,10 @@ class HttpUpstreamTransport(UpstreamTransport):
     async def restart(self) -> None:
         await self.stop()
         await self.start()
+
+    # ------------------------------------------------------------------
+    # Request path
+    # ------------------------------------------------------------------
 
     async def request(self, message: dict[str, Any]) -> dict[str, Any] | None:
         if not self._client:
@@ -44,4 +132,12 @@ class HttpUpstreamTransport(UpstreamTransport):
         await self._client.post(self.url, json=message)
 
     def health(self) -> dict[str, Any]:
-        return {"type": "http", "url": self.url, "started": self._client is not None}
+        auth_type = "none"
+        if self.auth_config is not None:
+            auth_type = getattr(self.auth_config, "type", type(self.auth_config).__name__)
+        return {
+            "type": "http",
+            "url": self.url,
+            "started": self._client is not None,
+            "auth": auth_type,
+        }

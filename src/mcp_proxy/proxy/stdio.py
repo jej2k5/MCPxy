@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
 import random
 from typing import Any
 
@@ -18,6 +19,14 @@ class StdioUpstreamTransport(UpstreamTransport):
         self.name = name
         self.command = settings["command"]
         self.args = settings.get("args", [])
+        # Per-upstream env overlay. Merged on top of the proxy's own env at
+        # spawn time so PATH and friends still resolve, while secrets like
+        # GITHUB_TOKEN or NOTION_API_KEY stay scoped to this single upstream
+        # rather than leaking into siblings. Values are already expanded
+        # (${env:FOO} / ${secret:NAME}) by load_config before we see them.
+        self.env_overlay: dict[str, str] = {
+            str(k): str(v) for k, v in (settings.get("env") or {}).items()
+        }
         self.queue_size = int(settings.get("queue_size", 200))
         self._proc: asyncio.subprocess.Process | None = None
         self._pending: dict[Any, asyncio.Future[dict[str, Any] | None]] = {}
@@ -30,6 +39,13 @@ class StdioUpstreamTransport(UpstreamTransport):
         await self._spawn()
         self._running = True
 
+    def _build_env(self) -> dict[str, str] | None:
+        if not self.env_overlay:
+            return None
+        merged = dict(os.environ)
+        merged.update(self.env_overlay)
+        return merged
+
     async def _spawn(self) -> None:
         self._proc = await asyncio.create_subprocess_exec(
             self.command,
@@ -37,6 +53,7 @@ class StdioUpstreamTransport(UpstreamTransport):
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=self._build_env(),
         )
         self._reader_task = asyncio.create_task(self._reader())
 

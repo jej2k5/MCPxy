@@ -18,7 +18,17 @@ from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from mcp_proxy.config import AppConfig
+from mcp_proxy.auth.oauth import (
+    OAuthError,
+    OAuthManager,
+    OAuthNotAuthorizedError,
+)
+from mcp_proxy.config import (
+    AppConfig,
+    HttpUpstreamConfig,
+    OAuth2AuthConfig,
+    find_secret_references,
+)
 from mcp_proxy.discovery.catalog import Catalog, load_catalog
 from mcp_proxy.discovery.importers import IMPORTERS, discover_all, get_importer
 from mcp_proxy.discovery.registration import (
@@ -38,6 +48,7 @@ from mcp_proxy.plugins.registry import PluginRegistry
 from mcp_proxy.proxy.manager import UpstreamManager
 from mcp_proxy.routing import resolve_upstream
 from mcp_proxy.runtime import RuntimeConfigManager
+from mcp_proxy.secrets import SecretsManager, SecretStoreError
 from mcp_proxy.telemetry.pipeline import TelemetryPipeline
 
 
@@ -70,6 +81,8 @@ class AppState:
         telemetry: TelemetryPipeline,
         registry: PluginRegistry,
         config_path: str | None = None,
+        secrets_manager: SecretsManager | None = None,
+        oauth_manager: OAuthManager | None = None,
     ) -> None:
         self.config = config
         self.raw_config = raw_config
@@ -78,6 +91,24 @@ class AppState:
         self.telemetry = telemetry
         self.registry = registry
         self.config_path = config_path
+        # SecretsManager is created by the CLI's build_state so that config
+        # loading can run through ${secret:NAME} expansion before we even
+        # reach this class. Tests that construct AppState directly can
+        # leave it None and the runtime config path will skip secret
+        # expansion (secrets_manager.get is simply not installed).
+        self.secrets_manager = secrets_manager or SecretsManager(autoload=False)
+        # OAuth manager is a process-wide coordinator for every HTTP
+        # upstream that uses oauth2. It persists tokens and dynamic
+        # client credentials via the same SecretsManager, so rotation of
+        # MCPY_SECRETS_KEY is the single point of control for all
+        # upstream auth state.
+        self.oauth_manager = oauth_manager or OAuthManager(secrets=self.secrets_manager)
+        # If the caller didn't wire the OAuth manager into UpstreamManager
+        # (most tests construct UpstreamManager without one), fill it in
+        # now so HTTP transports with oauth2 auth can find the shared
+        # manager via the settings side-channel.
+        if getattr(manager, "_oauth_manager", None) is None:
+            manager._oauth_manager = self.oauth_manager  # type: ignore[attr-defined]
         self.started_at = time.time()
         self.log_buffer: deque[dict[str, Any]] = deque(maxlen=400)
         self.traffic = TrafficRecorder()
@@ -91,7 +122,13 @@ class AppState:
             registry=self.registry,
             config_path=self.config_path,
             policy_engine=self.policy_engine,
+            secrets_resolver=self.secrets_manager.get,
+            on_config_applied=self._register_oauth_configs,
         )
+        # Seed the OAuth manager with any upstreams that already have
+        # oauth2 configured, so persisted tokens from a previous run are
+        # warmed into the in-memory cache before the transports start.
+        self._register_oauth_configs(config)
         self.registration = RegistrationService(self.runtime_config)
         try:
             self.catalog: Catalog | None = load_catalog()
@@ -108,6 +145,33 @@ class AppState:
                 self.registration,
                 directory=Path(drop_dir) if drop_dir else DEFAULT_DROP_DIR,
             )
+
+    # ------------------------------------------------------------------
+    # OAuth config bookkeeping
+    # ------------------------------------------------------------------
+
+    def _register_oauth_configs(self, cfg: AppConfig) -> None:
+        """Push every HTTP upstream's oauth2 config into the OAuthManager.
+
+        Upstreams whose ``auth`` is not ``oauth2`` are unregistered from
+        the manager so stale token caches don't linger after a config
+        edit that switches them to bearer auth (or removes them
+        entirely).
+        """
+        seen: set[str] = set()
+        for name, upstream_cfg in cfg.upstreams.items():
+            if not isinstance(upstream_cfg, HttpUpstreamConfig):
+                continue
+            auth = upstream_cfg.auth
+            if not isinstance(auth, OAuth2AuthConfig):
+                self.oauth_manager.unregister_upstream(name)
+                continue
+            self.oauth_manager.register_upstream(name, auth)
+            seen.add(name)
+        # Drop OAuth state for upstreams that disappeared entirely.
+        for known in list(self.oauth_manager._configs):  # type: ignore[attr-defined]
+            if known not in seen:
+                self.oauth_manager.unregister_upstream(known)
 
 
 def _decode_message(raw: Any) -> dict[str, Any]:
@@ -713,6 +777,152 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
                 "entries": [e.to_dict() for e in entries],
             }
         )
+
+    @app.get("/admin/api/secrets")
+    async def admin_api_secrets_list(request: Request) -> JSONResponse:
+        require_admin_auth(request)
+        # Raw secret values never leave the process; list_public returns
+        # name + metadata + a masked preview only. ``referenced`` enumerates
+        # every ${secret:NAME} found in the current config so the UI can
+        # surface orphans and dangling references.
+        referenced = find_secret_references(state.raw_config)
+        known = set(state.secrets_manager.known_names())
+        return JSONResponse(
+            {
+                "secrets": state.secrets_manager.list_public(),
+                "referenced": referenced,
+                "missing": sorted(n for n in referenced if n not in known),
+                "orphans": sorted(n for n in known if n not in set(referenced)),
+            }
+        )
+
+    @app.post("/admin/api/secrets")
+    async def admin_api_secrets_upsert(request: Request) -> JSONResponse:
+        require_admin_auth(request)
+        body = await request.json()
+        name = body.get("name")
+        value = body.get("value")
+        description = body.get("description", "") or ""
+        if not isinstance(name, str) or not isinstance(value, str):
+            raise HTTPException(
+                status_code=400,
+                detail="body requires 'name' and 'value' strings",
+            )
+        try:
+            rec = await state.secrets_manager.set(
+                name, value, description=description
+            )
+        except SecretStoreError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        state.runtime_config.telemetry.emit_nowait(
+            {"event": "secret_upserted", "name": name}
+        )
+        return JSONResponse({"secret": rec.to_public_dict()})
+
+    @app.delete("/admin/api/secrets/{name}")
+    async def admin_api_secrets_delete(request: Request, name: str) -> JSONResponse:
+        require_admin_auth(request)
+        try:
+            removed = await state.secrets_manager.delete(name)
+        except SecretStoreError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if not removed:
+            raise HTTPException(status_code=404, detail=f"secret {name!r} not found")
+        state.runtime_config.telemetry.emit_nowait(
+            {"event": "secret_deleted", "name": name}
+        )
+        return JSONResponse({"deleted": True, "name": name})
+
+    # ------------------------------------------------------------------
+    # OAuth upstream flow
+    # ------------------------------------------------------------------
+
+    @app.get("/admin/api/oauth")
+    async def admin_api_oauth_list(request: Request) -> JSONResponse:
+        require_admin_auth(request)
+        names: list[str] = []
+        for name, up in state.config.upstreams.items():
+            if isinstance(up, HttpUpstreamConfig) and isinstance(up.auth, OAuth2AuthConfig):
+                names.append(name)
+        return JSONResponse(
+            {
+                "upstreams": [state.oauth_manager.status(n) for n in sorted(names)]
+            }
+        )
+
+    @app.get("/admin/api/oauth/{upstream}/status")
+    async def admin_api_oauth_status(request: Request, upstream: str) -> JSONResponse:
+        require_admin_auth(request)
+        return JSONResponse(state.oauth_manager.status(upstream))
+
+    @app.post("/admin/api/oauth/{upstream}/start")
+    async def admin_api_oauth_start(request: Request, upstream: str) -> JSONResponse:
+        require_admin_auth(request)
+        body: dict[str, Any] = {}
+        if request.headers.get("content-length") not in (None, "0"):
+            try:
+                body = await request.json()
+            except ValueError:
+                body = {}
+        redirect_uri = body.get("redirect_uri")
+        try:
+            result = await state.oauth_manager.start_authorization(
+                upstream, redirect_uri=redirect_uri
+            )
+        except OAuthError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        state.runtime_config.telemetry.emit_nowait(
+            {"event": "oauth_start", "upstream": upstream}
+        )
+        return JSONResponse(result)
+
+    @app.get("/admin/api/oauth/callback")
+    async def admin_api_oauth_callback(
+        request: Request,
+        code: str | None = None,
+        state_arg: str | None = None,
+        error: str | None = None,
+    ) -> HTMLResponse:
+        # No require_admin_auth here: the browser hitting this endpoint
+        # after the auth-server redirect has no way to send a bearer
+        # token. The ``state`` parameter (CSRF-bound) is the auth for
+        # this path — it must match an in-memory PendingAuthorization
+        # that the admin API created earlier via /start.
+        raw_state = request.query_params.get("state") or state_arg
+        if error:
+            return HTMLResponse(
+                f"<h1>Authorization failed</h1><p>{error}</p>",
+                status_code=400,
+            )
+        if not code or not raw_state:
+            raise HTTPException(
+                status_code=400, detail="missing 'code' or 'state' query param"
+            )
+        try:
+            token = await state.oauth_manager.finish_authorization(raw_state, code)
+        except OAuthError as exc:
+            return HTMLResponse(
+                f"<h1>Authorization failed</h1><p>{exc}</p>",
+                status_code=400,
+            )
+        state.runtime_config.telemetry.emit_nowait(
+            {"event": "oauth_complete", "scopes": token.scope}
+        )
+        return HTMLResponse(
+            "<!doctype html><title>MCPy OAuth</title>"
+            "<h1>Authorization complete</h1>"
+            "<p>You can close this tab and return to MCPy.</p>",
+            status_code=200,
+        )
+
+    @app.delete("/admin/api/oauth/{upstream}/token")
+    async def admin_api_oauth_revoke(request: Request, upstream: str) -> JSONResponse:
+        require_admin_auth(request)
+        removed = await state.oauth_manager.revoke_tokens(upstream)
+        state.runtime_config.telemetry.emit_nowait(
+            {"event": "oauth_revoke", "upstream": upstream, "had_token": removed}
+        )
+        return JSONResponse({"revoked": removed, "upstream": upstream})
 
     @app.post("/admin/api/catalog/install")
     async def admin_api_catalog_install(request: Request) -> JSONResponse:

@@ -7,12 +7,21 @@ import os
 import re
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 
 ENV_RE = re.compile(r"\$\{env:([A-Z0-9_]+)\}")
+SECRET_RE = re.compile(r"\$\{secret:([A-Za-z0-9_][A-Za-z0-9_\-]*)\}")
+
+# Resolver signature for ``${secret:NAME}`` expansion. Passed in by the
+# caller (runtime / CLI / tests) so the config module has no hard dependency
+# on :mod:`mcp_proxy.secrets`. A resolver returning ``None`` causes the
+# placeholder to be replaced with an empty string — the same behaviour as
+# missing ``${env:FOO}`` references, which keeps validation deterministic
+# when secrets haven't been populated yet (e.g. during dry-run validation).
+SecretResolver = Callable[[str], "str | None"]
 
 
 class AuthConfig(BaseModel):
@@ -87,7 +96,112 @@ class StdioUpstreamConfig(BaseModel):
     type: Literal["stdio"]
     command: str
     args: list[str] = Field(default_factory=list)
+    env: dict[str, str] = Field(default_factory=dict)
     queue_size: int = 200
+
+
+# ---------------------------------------------------------------------------
+# HTTP upstream auth taxonomy
+# ---------------------------------------------------------------------------
+#
+# Discriminated on ``type``. Every variant ultimately produces either a
+# static set of HTTP request headers (``bearer``, ``api_key``, ``basic``,
+# ``none``) or a dynamic per-request auth object (``oauth2``). The
+# transport layer turns these into the actual outgoing ``Authorization``
+# header; config validation only concerns itself with shape.
+#
+# All ``${env:FOO}`` and ``${secret:NAME}`` placeholders are expanded at
+# config apply time, before these models are constructed, so the values
+# you see inside a ``BearerAuthConfig.token`` are already the real tokens.
+
+
+class NoAuthConfig(BaseModel):
+    """Explicit ``{"type": "none"}`` — equivalent to omitting ``auth`` entirely."""
+
+    type: Literal["none"] = "none"
+
+
+class BearerAuthConfig(BaseModel):
+    """HTTP ``Authorization: Bearer <token>`` static auth.
+
+    The most common upstream auth shape (Notion, Linear, Anthropic, …).
+    """
+
+    type: Literal["bearer"]
+    token: str = Field(min_length=1)
+
+
+class ApiKeyAuthConfig(BaseModel):
+    """Custom-header API key auth, e.g. ``X-Api-Key: <value>``."""
+
+    type: Literal["api_key"]
+    header: str = Field(default="X-Api-Key", min_length=1)
+    value: str = Field(min_length=1)
+
+
+class BasicAuthConfig(BaseModel):
+    """HTTP Basic auth (RFC 7617) — username/password pair."""
+
+    type: Literal["basic"]
+    username: str = Field(min_length=1)
+    password: str = Field(min_length=0)
+
+
+class OAuth2AuthConfig(BaseModel):
+    """OAuth 2.1 authorization-code + PKCE auth for HTTP upstreams.
+
+    Fields mirror the MCP auth spec + RFC 8414 (OAuth 2.0 Authorization
+    Server Metadata). ``issuer`` is preferred: if set, the runtime fetches
+    ``<issuer>/.well-known/oauth-authorization-server`` to discover the
+    authorization/token endpoints automatically. ``authorization_endpoint``
+    and ``token_endpoint`` are escape hatches for providers that don't
+    publish RFC 8414 metadata.
+
+    ``dynamic_registration`` opts into RFC 7591 dynamic client
+    registration — when true, the proxy registers itself at the auth
+    server's registration endpoint instead of requiring a pre-issued
+    ``client_id``/``client_secret`` pair.
+
+    ``scopes`` is an optional list of OAuth scopes to request; leave empty
+    to default to whatever the auth server offers.
+    """
+
+    type: Literal["oauth2"]
+    issuer: str | None = None
+    authorization_endpoint: str | None = None
+    token_endpoint: str | None = None
+    registration_endpoint: str | None = None
+    client_id: str | None = None
+    client_secret: str | None = None
+    scopes: list[str] = Field(default_factory=list)
+    audience: str | None = None
+    redirect_uri: str | None = None
+    dynamic_registration: bool = False
+
+    @model_validator(mode="after")
+    def _check_endpoints(self) -> "OAuth2AuthConfig":
+        has_issuer = bool(self.issuer)
+        has_manual = bool(self.authorization_endpoint and self.token_endpoint)
+        if not has_issuer and not has_manual:
+            raise ValueError(
+                "oauth2 auth requires either 'issuer' (for RFC 8414 discovery) "
+                "or both 'authorization_endpoint' and 'token_endpoint'"
+            )
+        if not self.client_id and not self.dynamic_registration:
+            raise ValueError(
+                "oauth2 auth requires 'client_id' unless "
+                "'dynamic_registration' is enabled"
+            )
+        return self
+
+
+HttpAuthConfig = (
+    NoAuthConfig
+    | BearerAuthConfig
+    | ApiKeyAuthConfig
+    | BasicAuthConfig
+    | OAuth2AuthConfig
+)
 
 
 class HttpUpstreamConfig(BaseModel):
@@ -95,6 +209,8 @@ class HttpUpstreamConfig(BaseModel):
 
     type: Literal["http"]
     url: str
+    headers: dict[str, str] = Field(default_factory=dict)
+    auth: HttpAuthConfig | None = Field(default=None, discriminator="type")
     timeout_s: float = 30.0
 
 
@@ -130,17 +246,90 @@ def _expand_env(value: Any) -> Any:
     return value
 
 
-def load_config(path: str | Path) -> AppConfig:
-    """Load and validate config from JSON file."""
+def _expand_secrets(value: Any, resolver: SecretResolver) -> Any:
+    """Replace every ``${secret:NAME}`` placeholder with ``resolver(NAME)``.
+
+    Walks the same nested (dict | list | str) tree as :func:`_expand_env`.
+    A resolver miss produces an empty string so downstream pydantic
+    validation can still run; the runtime layer is responsible for
+    surfacing missing-secret errors at apply time, where it has enough
+    context to blame a specific upstream.
+    """
+    if isinstance(value, dict):
+        return {k: _expand_secrets(v, resolver) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_expand_secrets(v, resolver) for v in value]
+    if isinstance(value, str):
+        def repl(match: re.Match[str]) -> str:
+            resolved = resolver(match.group(1))
+            return "" if resolved is None else resolved
+        return SECRET_RE.sub(repl, value)
+    return value
+
+
+def _apply_expansions(
+    value: Any,
+    *,
+    secrets: SecretResolver | None,
+) -> Any:
+    expanded = _expand_env(value)
+    if secrets is not None:
+        expanded = _expand_secrets(expanded, secrets)
+    return expanded
+
+
+def find_secret_references(payload: Any) -> list[str]:
+    """Return every ``${secret:NAME}`` placeholder referenced in ``payload``.
+
+    Used by the runtime config applier to validate up front that referenced
+    secrets actually exist before swapping in a new config, so operators
+    get a clean error message instead of an empty-string silent failure in
+    an upstream env var.
+    """
+    out: set[str] = set()
+
+    def walk(v: Any) -> None:
+        if isinstance(v, dict):
+            for item in v.values():
+                walk(item)
+        elif isinstance(v, list):
+            for item in v:
+                walk(item)
+        elif isinstance(v, str):
+            for match in SECRET_RE.finditer(v):
+                out.add(match.group(1))
+
+    walk(payload)
+    return sorted(out)
+
+
+def load_config(
+    path: str | Path,
+    *,
+    secrets: SecretResolver | None = None,
+) -> AppConfig:
+    """Load and validate config from JSON file.
+
+    If ``secrets`` is provided it is invoked to expand any ``${secret:NAME}``
+    placeholders alongside the pre-existing ``${env:FOO}`` expansion. CLI
+    callers leave it unset (and get the historical behaviour); the server
+    runtime supplies a resolver backed by :class:`~mcp_proxy.secrets.SecretsManager`.
+    """
     data = json.loads(Path(path).read_text())
-    expanded = _expand_env(data)
+    expanded = _apply_expansions(data, secrets=secrets)
     return AppConfig.model_validate(expanded)
 
 
-def validate_config_payload(payload: dict[str, Any]) -> tuple[bool, str | None]:
+def validate_config_payload(
+    payload: dict[str, Any],
+    *,
+    secrets: SecretResolver | None = None,
+) -> tuple[bool, str | None]:
     """Validate an in-memory config payload."""
     try:
-        AppConfig.model_validate(_expand_env(deepcopy(payload)))
+        AppConfig.model_validate(
+            _apply_expansions(deepcopy(payload), secrets=secrets)
+        )
     except ValidationError as exc:
         return False, str(exc)
     except ValueError as exc:
@@ -148,14 +337,46 @@ def validate_config_payload(payload: dict[str, Any]) -> tuple[bool, str | None]:
     return True, None
 
 
+_SECRET_KEY_HINTS = ("key", "token", "auth", "secret", "password", "credential")
+
+
+def _looks_secret_shaped(key: str) -> bool:
+    k = key.lower()
+    return any(hint in k for hint in _SECRET_KEY_HINTS)
+
+
 def redact_secrets(payload: dict[str, Any]) -> dict[str, Any]:
-    """Redact secret-like values from config payload."""
+    """Redact secret-like values from config payload.
+
+    Covers:
+      - ``auth.token_env`` (the env var *name* that holds the proxy bearer).
+      - ``telemetry.headers[*]`` for header names that look secret-shaped.
+      - ``upstreams[*].env[*]`` for stdio upstreams — any env key that looks
+        secret-shaped gets its value replaced with a marker. This stops the
+        Config page from leaking ``GITHUB_TOKEN`` etc. back to the dashboard.
+      - ``upstreams[*].headers[*]`` for http upstreams — same treatment.
+    """
     redacted = deepcopy(payload)
     headers = redacted.get("telemetry", {}).get("headers", {})
     for key in list(headers.keys()):
-        if "key" in key.lower() or "token" in key.lower() or "auth" in key.lower():
+        if _looks_secret_shaped(key):
             headers[key] = "***REDACTED***"
     token_env = redacted.get("auth", {}).get("token_env")
     if token_env:
         redacted["auth"]["token_env"] = "***REDACTED_ENV***"
+    upstreams = redacted.get("upstreams") or {}
+    if isinstance(upstreams, dict):
+        for _name, settings in upstreams.items():
+            if not isinstance(settings, dict):
+                continue
+            env = settings.get("env")
+            if isinstance(env, dict):
+                for k in list(env.keys()):
+                    if _looks_secret_shaped(k):
+                        env[k] = "***REDACTED***"
+            headers = settings.get("headers")
+            if isinstance(headers, dict):
+                for k in list(headers.keys()):
+                    if _looks_secret_shaped(k):
+                        headers[k] = "***REDACTED***"
     return redacted

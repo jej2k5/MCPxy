@@ -24,19 +24,38 @@ def _as_dict(settings: Any) -> dict[str, Any]:
 class UpstreamManager:
     """Manage lifecycle and routing for upstream transports."""
 
-    def __init__(self, config_upstreams: dict[str, Any], registry: PluginRegistry) -> None:
+    def __init__(
+        self,
+        config_upstreams: dict[str, Any],
+        registry: PluginRegistry,
+        oauth_manager: Any | None = None,
+    ) -> None:
         self._config_upstreams: dict[str, dict[str, Any]] = {
             name: _as_dict(settings) for name, settings in config_upstreams.items()
         }
         self._registry = registry
+        self._oauth_manager = oauth_manager
         self._upstreams: dict[str, UpstreamTransport] = {}
+
+    def _instantiate(self, name: str, settings: dict[str, Any]) -> UpstreamTransport:
+        """Build a transport instance, injecting runtime dependencies that
+        don't belong in the persisted config dict (OAuth manager).
+
+        The returned transport sees ``settings`` with any needed
+        ``_oauth_manager`` side channel added, but the manager's own
+        ``_config_upstreams`` entry stays pristine so diff comparisons
+        don't see spurious changes.
+        """
+        cls = self._registry.validate_upstream_type(settings.get("type"))
+        settings_with_runtime = dict(settings)
+        if self._oauth_manager is not None:
+            settings_with_runtime["_oauth_manager"] = self._oauth_manager
+        return cls(name, settings_with_runtime)
 
     async def start(self) -> None:
         """Start all configured upstream transports."""
         for name, settings in self._config_upstreams.items():
-            t_name = settings.get("type")
-            cls = self._registry.validate_upstream_type(t_name)
-            transport = cls(name, settings)
+            transport = self._instantiate(name, settings)
             await transport.start()
             self._upstreams[name] = transport
 
@@ -67,10 +86,7 @@ class UpstreamManager:
         try:
             # Create new/replaced upstreams before touching old ones.
             for name in to_add + to_restart:
-                settings = next_upstreams[name]
-                t_name = settings.get("type")
-                cls = self._registry.validate_upstream_type(t_name)
-                transport = cls(name, settings)
+                transport = self._instantiate(name, next_upstreams[name])
                 await transport.start()
                 started_new[name] = transport
 
