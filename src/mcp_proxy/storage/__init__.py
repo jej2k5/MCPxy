@@ -22,7 +22,7 @@ Public entry points:
   if needed, and returns an initialised ``ConfigStore``.
 """
 
-from mcp_proxy.storage.config_store import ConfigStore, open_store
+from mcp_proxy.storage.config_store import ConfigStore, OnboardingState, open_store
 from mcp_proxy.storage.db import (
     DEFAULT_SQLITE_FILENAME,
     DatabaseError,
@@ -34,6 +34,7 @@ from mcp_proxy.storage.schema import (
     METADATA,
     config_history_table,
     config_kv_table,
+    onboarding_table,
     secrets_table,
     upstreams_table,
 )
@@ -44,9 +45,11 @@ __all__ = [
     "DatabaseError",
     "DEFAULT_SQLITE_FILENAME",
     "METADATA",
+    "OnboardingState",
     "build_engine",
     "config_history_table",
     "config_kv_table",
+    "onboarding_table",
     "open_store",
     "resolve_database_url",
     "secrets_table",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import signal
 import time
 from codecs import getincrementaldecoder
@@ -28,6 +29,7 @@ from mcp_proxy.config import (
     HttpUpstreamConfig,
     OAuth2AuthConfig,
     find_secret_references,
+    resolve_admin_token,
 )
 from mcp_proxy.discovery.catalog import Catalog, load_catalog
 from mcp_proxy.discovery.importers import IMPORTERS, discover_all, get_importer
@@ -49,8 +51,44 @@ from mcp_proxy.proxy.manager import UpstreamManager
 from mcp_proxy.routing import resolve_upstream
 from mcp_proxy.runtime import RuntimeConfigManager
 from mcp_proxy.secrets import SecretsManager, SecretStoreError
-from mcp_proxy.storage.config_store import ConfigStore
+from mcp_proxy.storage.config_store import ConfigStore, OnboardingState
 from mcp_proxy.telemetry.pipeline import TelemetryPipeline
+
+
+# Onboarding bypass TTL: if the wizard isn't completed within this window
+# after the first-run row is created, the onboarding endpoints stop
+# accepting writes and return 410. Operators who need longer can set
+# MCPY_ONBOARDING_TTL_S (seconds) before starting the proxy.
+DEFAULT_ONBOARDING_TTL_S = 30 * 60
+
+# Client IPs that are allowed to hit the onboarding endpoints. Limited
+# to loopback by default because the endpoints are unauthenticated;
+# operators running the proxy behind an ingress that rewrites the
+# client IP can override via MCPY_ONBOARDING_ALLOWED_CLIENTS
+# (comma-separated list, e.g. ``127.0.0.1,10.0.0.5``).
+_DEFAULT_ONBOARDING_ALLOWED_CLIENTS: tuple[str, ...] = (
+    "127.0.0.1",
+    "::1",
+    "localhost",
+    "testclient",  # FastAPI TestClient
+)
+
+
+def _onboarding_ttl() -> float:
+    raw_env = os.getenv("MCPY_ONBOARDING_TTL_S")
+    if raw_env is None:
+        return float(DEFAULT_ONBOARDING_TTL_S)
+    try:
+        return max(60.0, float(raw_env))
+    except ValueError:
+        return float(DEFAULT_ONBOARDING_TTL_S)
+
+
+def _onboarding_allowed_clients() -> set[str]:
+    raw = os.getenv("MCPY_ONBOARDING_ALLOWED_CLIENTS")
+    if not raw:
+        return set(_DEFAULT_ONBOARDING_ALLOWED_CLIENTS)
+    return {item.strip() for item in raw.split(",") if item.strip()}
 
 
 class InMemoryLogHandler(logging.Handler):
@@ -252,20 +290,27 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
     root_logger = logging.getLogger()
     root_logger.addHandler(InMemoryLogHandler(state.log_buffer))
 
+    def _resolve_admin_bearer() -> str | None:
+        """Return the currently-configured admin bearer token.
+
+        Tries the direct ``auth.token`` field first (populated by the
+        onboarding wizard or by a ``${secret:NAME}`` reference) and
+        falls back to the env var pointed at by ``auth.token_env`` for
+        backwards compatibility with file-based deployments.
+        """
+        return resolve_admin_token(state.runtime_config.config.auth)
+
     def require_auth_if_needed(request: Request) -> None:
-        token_env = state.runtime_config.config.auth.token_env
-        if token_env:
-            expected = __import__("os").getenv(token_env)
-            if expected and _get_bearer(request) != expected:
-                raise HTTPException(status_code=401, detail="unauthorized")
+        expected = _resolve_admin_bearer()
+        if expected and _get_bearer(request) != expected:
+            raise HTTPException(status_code=401, detail="unauthorized")
 
     def require_admin_auth(request: Request) -> None:
         admin = state.runtime_config.config.admin
         if admin.allowed_clients and _client_ip(request) not in admin.allowed_clients:
             raise HTTPException(status_code=403, detail="forbidden")
         if admin.require_token:
-            token_env = state.runtime_config.config.auth.token_env
-            expected = __import__("os").getenv(token_env) if token_env else None
+            expected = _resolve_admin_bearer()
             if not expected:
                 raise HTTPException(status_code=500, detail="admin_token_not_configured")
             if _get_bearer(request) != expected:
@@ -490,6 +535,212 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
         # The SPA HTML is public; the in-page LoginGate collects the admin
         # token and all /admin/api/* endpoints remain auth-gated.
         return HTMLResponse(_dashboard_html())
+
+    # ------------------------------------------------------------------
+    # First-run onboarding
+    # ------------------------------------------------------------------
+
+    def _current_onboarding() -> OnboardingState | None:
+        return state.config_store.get_onboarding_state()
+
+    def _onboarding_public(obstate: OnboardingState | None) -> dict[str, Any]:
+        if obstate is None:
+            return {
+                "active": False,
+                "completed": False,
+                "expired": False,
+                "required": False,
+            }
+        base = obstate.to_public_dict(ttl_s=_onboarding_ttl())
+        # ``required`` tells the frontend whether to route straight to
+        # the wizard instead of the normal LoginGate. It's active-and-
+        # not-expired AND the admin token isn't set yet (the wizard
+        # can finish before touching upstreams, so expired state
+        # still counts as "required" unless finished).
+        base["required"] = bool(
+            base["active"]
+            and not base["completed"]
+            and obstate.admin_token_set_at is None
+        )
+        return base
+
+    def _require_onboarding_access(request: Request) -> OnboardingState:
+        """Shared gating for all mutating onboarding endpoints.
+
+        Refuses when the row is missing, the flow was already
+        completed (410 Gone), the TTL elapsed (410 Gone), or the
+        request came from an IP that isn't on the allowed list.
+        The allowed list defaults to loopback + FastAPI's
+        ``testclient`` so local dev + CI both work without ceremony.
+        """
+        obstate = _current_onboarding()
+        if obstate is None:
+            raise HTTPException(
+                status_code=404,
+                detail="onboarding not initialised",
+            )
+        if obstate.completed_at is not None:
+            raise HTTPException(
+                status_code=410,
+                detail="onboarding already completed",
+            )
+        ttl = _onboarding_ttl()
+        if time.time() - obstate.created_at > ttl:
+            raise HTTPException(
+                status_code=410,
+                detail=(
+                    f"onboarding window expired ({int(ttl)}s TTL); "
+                    "restart the proxy to reopen it"
+                ),
+            )
+        allowed = _onboarding_allowed_clients()
+        client_ip = _client_ip(request)
+        if allowed and client_ip not in allowed:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"onboarding endpoints are loopback-only by default; "
+                    f"client {client_ip!r} is not in the allowed list"
+                ),
+            )
+        return obstate
+
+    @app.middleware("http")
+    async def _onboarding_gate(request: Request, call_next: Any) -> Any:
+        """Block non-onboarding admin API traffic while the wizard is active.
+
+        While onboarding is still pending we intentionally run with
+        ``auth.require_token=False`` so the wizard is reachable. The
+        side effect is that every other admin endpoint would be
+        unauthenticated too — which is exactly the footgun this
+        middleware closes. Non-onboarding ``/admin/api/*`` calls get a
+        503 with ``onboarding_required=true`` so the dashboard client
+        redirects to the wizard instead of rendering broken data.
+
+        Routes that are deliberately left open:
+          - ``/admin/api/onboarding/*``   (the wizard itself)
+          - ``/admin/api/oauth/callback`` (browser redirect target)
+          - anything outside ``/admin/api/*`` (SPA, health, /mcp, etc.)
+        """
+        path = request.url.path
+        if not path.startswith("/admin/api/"):
+            return await call_next(request)
+        if path.startswith("/admin/api/onboarding/"):
+            return await call_next(request)
+        if path == "/admin/api/oauth/callback":
+            return await call_next(request)
+        obstate = _current_onboarding()
+        if obstate is None:
+            return await call_next(request)
+        public = _onboarding_public(obstate)
+        if public["required"]:
+            return JSONResponse(
+                {
+                    "detail": "onboarding_required",
+                    "onboarding": public,
+                },
+                status_code=503,
+            )
+        return await call_next(request)
+
+    @app.get("/admin/api/onboarding/status")
+    async def admin_api_onboarding_status(_request: Request) -> JSONResponse:
+        # Intentionally unauthenticated: the whole point is that the
+        # frontend can probe this before it has any credentials.
+        return JSONResponse(_onboarding_public(_current_onboarding()))
+
+    @app.post("/admin/api/onboarding/set_admin_token")
+    async def admin_api_onboarding_set_admin_token(request: Request) -> JSONResponse:
+        _require_onboarding_access(request)
+        body = await request.json()
+        token = body.get("token")
+        if not isinstance(token, str) or len(token) < 16:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "body requires a 'token' string of at least 16 chars "
+                    "(use a Fernet-style key or any high-entropy secret)"
+                ),
+            )
+
+        # Patch the live config with the new admin token + require_token=True
+        # and run it through the normal apply pipeline so everything
+        # downstream (OAuth manager, file-drop watcher, etc.) sees the
+        # new state in one atomic swap.
+        merged = deepcopy(state.raw_config)
+        merged.setdefault("auth", {})
+        merged["auth"]["token"] = token
+        merged.setdefault("admin", {})
+        merged["admin"]["require_token"] = True
+
+        result = await state.runtime_config.apply(
+            merged, source="onboarding.set_admin_token"
+        )
+        if not result.get("applied"):
+            raise HTTPException(
+                status_code=400,
+                detail=result.get("error", "failed to apply token"),
+            )
+        updated = state.config_store.stamp_admin_token_set()
+        state.runtime_config.telemetry.emit_nowait(
+            {"event": "onboarding_set_admin_token"}
+        )
+        return JSONResponse(
+            {
+                "applied": True,
+                "onboarding": _onboarding_public(updated),
+            }
+        )
+
+    @app.post("/admin/api/onboarding/add_upstream")
+    async def admin_api_onboarding_add_upstream(request: Request) -> JSONResponse:
+        _require_onboarding_access(request)
+        body = await request.json()
+        name = body.get("name")
+        definition = body.get("config") or body.get("definition")
+        if not name or not isinstance(definition, dict):
+            raise HTTPException(
+                status_code=400, detail="body requires 'name' and 'config' object"
+            )
+        try:
+            result = await state.registration.add(
+                name=str(name),
+                definition=definition,
+                replace=bool(body.get("replace", False)),
+                source="onboarding.add_upstream",
+            )
+        except RegistrationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if not result.get("applied"):
+            raise HTTPException(
+                status_code=400, detail=result.get("error", "registration failed")
+            )
+        state.config_store.stamp_first_upstream()
+        return JSONResponse(
+            {
+                **result,
+                "onboarding": _onboarding_public(_current_onboarding()),
+            }
+        )
+
+    @app.post("/admin/api/onboarding/finish")
+    async def admin_api_onboarding_finish(request: Request) -> JSONResponse:
+        obstate = _require_onboarding_access(request)
+        if obstate.admin_token_set_at is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "cannot finish onboarding before an admin token is set; "
+                    "POST /admin/api/onboarding/set_admin_token first"
+                ),
+            )
+        finished = state.config_store.finish_onboarding(
+            completed_by=_client_ip(request)
+        )
+        state.runtime_config.telemetry.emit_nowait(
+            {"event": "onboarding_finished"}
+        )
+        return JSONResponse(_onboarding_public(finished))
 
     @app.get("/admin/api/config")
     async def admin_api_config(request: Request) -> JSONResponse:

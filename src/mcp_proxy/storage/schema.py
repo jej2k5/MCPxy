@@ -122,11 +122,36 @@ secrets_table = Table(
 )
 
 
+# First-run onboarding state. One row, lifecycle:
+#
+#   - created on the very first start of a fresh DB (alongside the default
+#     bootstrap config in cli.build_state)
+#   - ``admin_token_set_at`` is stamped the moment the wizard POSTs a
+#     token so a second round-trip can't overwrite it
+#   - ``completed_at`` is stamped when the operator finishes the wizard;
+#     from then on the onboarding admin endpoints return 410 Gone
+#
+# The self-destruct-once-done pattern (rather than a deletable row) gives
+# us immutable "was this proxy ever onboarded" history for audit, and
+# makes the "onboarding active" predicate a single SELECT.
+onboarding_table = Table(
+    "onboarding",
+    METADATA,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("admin_token_set_at", DateTime(timezone=True), nullable=True),
+    Column("first_upstream_at", DateTime(timezone=True), nullable=True),
+    Column("completed_at", DateTime(timezone=True), nullable=True),
+    Column("completed_by", String(128), nullable=True),
+)
+
+
 __all__ = [
     "CURRENT_SCHEMA_VERSION",
     "METADATA",
     "config_history_table",
     "config_kv_table",
+    "onboarding_table",
     "schema_meta_table",
     "secrets_table",
     "upstreams_table",
