@@ -54,6 +54,17 @@ def test_resolve_admin_token_returns_none_when_nothing_set() -> None:
     assert resolve_admin_token(AuthConfig(), env_lookup=lambda _: None) is None
 
 
+def test_resolve_admin_token_treats_empty_env_as_unset() -> None:
+    """Docker Compose expands ``${MCP_PROXY_TOKEN:-}`` to an empty string
+    when the operator hasn't populated ``.env``, so the container env has
+    ``MCP_PROXY_TOKEN=""`` — set but empty. Must be treated identically to
+    a completely unset env var, otherwise the fail-closed middleware and
+    the onboarding gate disagree on whether a bearer is configured.
+    """
+    cfg = AuthConfig(token=None, token_env="MCP_PROXY_TOKEN")
+    assert resolve_admin_token(cfg, env_lookup={"MCP_PROXY_TOKEN": ""}.get) is None
+
+
 def test_redact_masks_direct_token() -> None:
     from mcp_proxy.config import redact_secrets
 

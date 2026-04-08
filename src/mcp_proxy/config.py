@@ -58,13 +58,23 @@ def resolve_admin_token(
     as a literal. If ``token`` is unset or empty we fall back to
     ``token_env`` (looked up via ``env_lookup`` so tests can inject a
     stub) for compatibility with the historical env-var path.
+
+    An env var that is *set but empty* (e.g. Docker Compose expanding
+    ``${MCP_PROXY_TOKEN:-}`` when the operator never populated ``.env``)
+    is treated identically to an unset env var — both return ``None``.
+    Callers like the fail-closed admin middleware and the first-run
+    onboarding gate use ``is None`` to decide whether a bearer has been
+    configured, and treating an empty string as a configured token
+    would leave the proxy in a half-authenticated state nobody wants.
     """
     if auth.token:
         return auth.token
     if auth.token_env:
         if env_lookup is None:
             env_lookup = os.getenv
-        return env_lookup(auth.token_env)
+        value = env_lookup(auth.token_env)
+        if value:
+            return value
     return None
 
 
