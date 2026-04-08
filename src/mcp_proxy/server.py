@@ -607,15 +607,29 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
 
     @app.middleware("http")
     async def _onboarding_gate(request: Request, call_next: Any) -> Any:
-        """Block non-onboarding admin API traffic while the wizard is active.
+        """Two-level fail-closed gate on the admin API surface.
 
         While onboarding is still pending we intentionally run with
         ``auth.require_token=False`` so the wizard is reachable. The
         side effect is that every other admin endpoint would be
         unauthenticated too — which is exactly the footgun this
-        middleware closes. Non-onboarding ``/admin/api/*`` calls get a
-        503 with ``onboarding_required=true`` so the dashboard client
-        redirects to the wizard instead of rendering broken data.
+        middleware closes. The gate has two layers:
+
+        1. **Onboarding required** — if the ``onboarding`` row exists
+           and ``required=true`` (wizard not yet completed, not yet
+           expired, admin token not yet set), return 503
+           ``onboarding_required`` so the dashboard client redirects
+           straight to the wizard.
+        2. **No bearer configured** — if no ``auth.token`` or
+           ``auth.token_env`` resolves to a real value, return 503
+           ``admin_token_not_configured`` regardless of onboarding
+           state. This is the fail-closed check that plugs the
+           TTL-expiry hole: once the onboarding window lapses,
+           ``required`` flips to false, but that must NOT fall
+           through to an unauthenticated admin API. It also guards
+           against any future footgun (operator manually unset
+           ``auth.token``, config rollback to an older version with
+           no token, etc.) leaving the proxy open.
 
         Routes that are deliberately left open:
           - ``/admin/api/onboarding/*``   (the wizard itself)
@@ -630,13 +644,25 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
         if path == "/admin/api/oauth/callback":
             return await call_next(request)
         obstate = _current_onboarding()
-        if obstate is None:
-            return await call_next(request)
         public = _onboarding_public(obstate)
-        if public["required"]:
+        if obstate is not None and public["required"]:
             return JSONResponse(
                 {
                     "detail": "onboarding_required",
+                    "onboarding": public,
+                },
+                status_code=503,
+            )
+        # Fail closed: refuse ALL non-onboarding admin API calls when
+        # no real bearer is resolvable from the live config, whether
+        # or not onboarding is still "active". Plugs the TTL-expiry
+        # hole (onboarding row exists but expired, and require_token
+        # is still False from bootstrap) and guards against any
+        # future footgun that leaves the proxy with no token at all.
+        if resolve_admin_token(state.runtime_config.config.auth) is None:
+            return JSONResponse(
+                {
+                    "detail": "admin_token_not_configured",
                     "onboarding": public,
                 },
                 status_code=503,
