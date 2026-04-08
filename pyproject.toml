@@ -66,4 +66,5 @@ mcp_proxy = [
   "web/static/*",
   "web/dist/*",
   "web/dist/**/*",
+  "data/*.json",
 ]

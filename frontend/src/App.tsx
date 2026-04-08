@@ -7,10 +7,11 @@ import RoutesPage from "./pages/Routes";
 import Traffic from "./pages/Traffic";
 import Policies from "./pages/Policies";
 import Connect from "./pages/Connect";
+import Browse from "./pages/Browse";
+import Import from "./pages/Import";
 import Logs from "./pages/Logs";
 import Config from "./pages/Config";
 import { apiGet, getToken } from "./api/client";
-import type { HealthResponse } from "./api/types";
 
 export default function App() {
   const [authed, setAuthed] = useState<boolean>(Boolean(getToken()));
@@ -22,7 +23,8 @@ export default function App() {
       return;
     }
     let cancelled = false;
-    apiGet<HealthResponse>("/health")
+    // Probe an auth-gated endpoint so a stale token drops us back to LoginGate.
+    apiGet<unknown>("/admin/api/config")
       .then(() => {
         if (!cancelled) setChecking(false);
       })
@@ -60,6 +62,8 @@ export default function App() {
             <Route path="/traffic" element={<Traffic />} />
             <Route path="/policies" element={<Policies />} />
             <Route path="/connect" element={<Connect />} />
+            <Route path="/browse" element={<Browse />} />
+            <Route path="/import" element={<Import />} />
             <Route path="/logs" element={<Logs />} />
             <Route path="/config" element={<Config />} />
             <Route path="*" element={<Navigate to="/overview" replace />} />

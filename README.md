@@ -1,8 +1,8 @@
 # MCPy Proxy
 
 A production-ready **multi-upstream MCP proxy** with a modern live
-dashboard, a policy engine, and one-line installers for Claude Desktop,
-Claude Code, and ChatGPT.
+dashboard, a policy engine, a bundled MCP server catalog, and one-line
+installers for Claude Desktop, Claude Code, and ChatGPT.
 
 ![MCPy Overview dashboard](docs/screenshots/dashboard-overview.png)
 
@@ -13,8 +13,9 @@ Claude Code, and ChatGPT.
   a single URL, with precedence-based routing (path > header > in-band >
   default).
 - **Modern live dashboard** at `/admin` — Overview, Routes, Live Traffic,
-  Policies, Connect, Logs, and Config pages. React + Vite + Tailwind,
-  shipped pre-built so `pip install` gives you a working UI.
+  Policies, Browse, Import, Connect, Logs, and Config pages. React +
+  Vite + Tailwind, shipped pre-built so `pip install` gives you a
+  working UI.
 - **Live traffic observability** — every forwarded request is recorded
   (metadata only — bodies are never stored) and streamed to the
   dashboard over Server-Sent Events. Per-upstream p50/p95/p99 latency,
@@ -24,6 +25,22 @@ Claude Code, and ChatGPT.
   max request-size caps. Edited live from the Policies page and hot-
   reloaded through the same atomic apply + rollback pipeline as the
   config file.
+- **Bundled MCP catalog** — a curated JSON catalog of well-known MCP
+  servers (filesystem, git, github, postgres, sqlite, brave-search,
+  fetch, puppeteer, slack, memory, and more). Browse, search, and
+  install with one click from the Browse page; or
+  `mcp-proxy catalog install <id> --var key=value`.
+- **Import from existing clients** — the Import page scans your local
+  Claude Desktop, Claude Code, Cursor, Windsurf, and Continue config
+  files, surfaces the MCP servers already configured there, and lets
+  you bring them into MCPy with one click. Also available as
+  `mcp-proxy discover` and `mcp-proxy import --client <id>`.
+- **Runtime registration API** — `POST /admin/api/upstreams` /
+  `DELETE /admin/api/upstreams/{name}` plus a file-drop directory at
+  `~/.mcpy/upstreams.d/` (drop a JSON file and the proxy picks it up
+  on the next poll; delete it to remove the upstream). Also available
+  as `mcp-proxy register --name foo --stdio "cmd args"` /
+  `mcp-proxy unregister --name foo`.
 - **One-line install into MCP clients** — `mcp-proxy install --client
   claude-desktop | claude-code | chatgpt` backs up your existing client
   config and registers MCPy as a tool. A bundled **stdio adapter**
@@ -91,6 +108,8 @@ Model Context Protocol (MCP) is a protocol for tool/server interoperability. In 
 - Policy engine: `src/mcp_proxy/policy/engine.py`
 - Install helpers: `src/mcp_proxy/install/clients.py`
 - Stdio adapter: `src/mcp_proxy/stdio_adapter.py`
+- MCP catalog + importers + runtime registration: `src/mcp_proxy/discovery/`
+- Bundled catalog JSON: `src/mcp_proxy/data/mcp_catalog.json`
 - Behavior tests: `tests/test_routing_precedence.py`,
   `tests/test_admin_auth.py`, `tests/test_atomic_apply_rollback.py`,
   `tests/test_redaction.py`, `tests/test_plugin_discovery.py`,
@@ -130,6 +149,8 @@ token-gated.
 | **Routes** — one card per upstream with health, transport, discovered tools (via periodic `tools/list` probe), and a restart button. | ![Routes](docs/screenshots/dashboard-routes.png) |
 | **Live Traffic** — Server-Sent-Events stream of every forwarded request (metadata only). Filter by upstream, method, or status; pause and clear. | ![Traffic](docs/screenshots/dashboard-traffic.png) |
 | **Policies** — method allow/deny lists (with wildcards), token-bucket rate limits, and size caps. Global and per-upstream. Hot-reloaded through the same atomic apply pipeline as the config file. | ![Policies](docs/screenshots/dashboard-policies.png) |
+| **Browse** — bundled catalog of well-known MCP servers with search, categories, and one-click install. Prompts for any required variables (paths, API keys). | ![Browse](docs/screenshots/dashboard-browse.png) |
+| **Import** — scans installed clients (Claude Desktop, Claude Code, Cursor, Windsurf, Continue) for MCP servers you already have and lets you bring them in with one click. | ![Import](docs/screenshots/dashboard-import.png) |
 | **Connect** — one-click snippets and install commands for Claude Desktop, Claude Code, and ChatGPT. | ![Connect](docs/screenshots/dashboard-connect.png) |
 
 ## Connecting Claude / ChatGPT
@@ -242,6 +263,76 @@ Browser (/admin — public SPA shell, in-page LoginGate)
   IP.
 - Secrets are redacted from returned config payloads.
 - Public read-only status is exposed at `/status` (no authentication).
+
+## Discovering and registering MCP servers
+
+MCPy ships three independent ways to bring MCP servers into the proxy,
+all of which route through the same atomic apply + rollback pipeline as
+the rest of the config.
+
+### 1. Browse the bundled catalog
+
+```bash
+mcp-proxy catalog list                 # pretty-printed list
+mcp-proxy catalog list -q git          # search
+mcp-proxy catalog install filesystem \
+  --var allowed_path=/home/me/projects \
+  --name my-fs                         # materialise + register via HTTP
+
+# or from the dashboard: Browse page → Install
+```
+
+The catalog lives at `src/mcp_proxy/data/mcp_catalog.json` and ships
+with ~15 well-known MCP servers. Entries declare a transport (stdio or
+http), a command line with `${variable}` placeholders, and a list of
+required/optional variables with descriptions and `secret` flags. The
+dashboard renders these as a form; missing required variables are
+rejected before anything is applied.
+
+### 2. Import from existing clients
+
+```bash
+mcp-proxy discover                     # local scan, pretty output
+mcp-proxy discover --json              # machine-readable
+
+# Import one, several, or all upstreams from another client:
+mcp-proxy import --client claude-desktop
+mcp-proxy import --client cursor --name postgres-prod
+```
+
+Importers read well-known config paths for Claude Desktop, Claude Code,
+Cursor, Windsurf, and Continue (per-OS paths are baked in) and map
+each `mcpServers` entry to an MCPy upstream. The Import page in the
+dashboard shows a checklist with paths and transport details.
+
+### 3. Runtime registration API
+
+```bash
+# Add an upstream on a running proxy:
+mcp-proxy register --name git --stdio "uvx mcp-server-git --repository /repo"
+mcp-proxy register --name api --http http://internal.example.com/mcp
+mcp-proxy unregister --name git
+
+# Or POST directly:
+curl -X POST http://127.0.0.1:8000/admin/api/upstreams \
+  -H "Authorization: Bearer $MCP_PROXY_TOKEN" \
+  -d '{"name":"git","config":{"type":"stdio","command":"uvx","args":["mcp-server-git"]}}'
+```
+
+**File drop.** Drop a JSON file into `~/.mcpy/upstreams.d/` and the
+running proxy picks it up on the next poll (default interval: 1s).
+Deleting the file removes the upstream. Useful for scripting,
+provisioning, and CI workflows.
+
+```bash
+mkdir -p ~/.mcpy/upstreams.d
+cat > ~/.mcpy/upstreams.d/memory.json <<'EOF'
+{"type": "stdio", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-memory"]}
+EOF
+```
+
+The file-drop watcher can be disabled by setting
+`registration.file_drop_enabled = false` in the main config.
 
 ## Policies
 

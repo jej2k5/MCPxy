@@ -13,6 +13,8 @@ from typing import Any
 import uvicorn
 
 from mcp_proxy.config import load_config
+from mcp_proxy.discovery.catalog import load_catalog
+from mcp_proxy.discovery.importers import IMPORTERS, discover_all, get_importer
 from mcp_proxy.install.clients import InstallOptions, get_adapter, list_clients
 from mcp_proxy.proxy.bridge import ProxyBridge
 from mcp_proxy.plugins.registry import PluginRegistry
@@ -215,6 +217,213 @@ def cmd_stdio(args: argparse.Namespace) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Remote admin helpers (used by register/import/catalog subcommands)
+# ---------------------------------------------------------------------------
+
+
+def _remote_headers(token_env: str | None) -> dict[str, str]:
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    env_name = token_env or "MCP_PROXY_TOKEN"
+    token = __import__("os").getenv(env_name)
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _remote_call(method: str, url: str, token_env: str | None, body: dict[str, Any] | None = None) -> dict[str, Any]:
+    import httpx
+
+    with httpx.Client(timeout=30.0) as client:
+        res = client.request(method, url, headers=_remote_headers(token_env), json=body)
+    try:
+        data = res.json() if res.content else {}
+    except ValueError:
+        data = {"raw": res.text}
+    if res.status_code >= 400:
+        detail = data.get("detail") if isinstance(data, dict) else None
+        raise SystemExit(
+            f"admin request {method} {url} failed: {res.status_code} {detail or res.text}"
+        )
+    return data if isinstance(data, dict) else {"result": data}
+
+
+def _parse_upstream_spec(body: str) -> dict[str, Any]:
+    if body.startswith("stdio:"):
+        parts = body[len("stdio:"):].split()
+        if not parts:
+            raise SystemExit("stdio: requires a command")
+        return {"type": "stdio", "command": parts[0], "args": parts[1:]}
+    if body.startswith("http:") or body.startswith("https:"):
+        return {"type": "http", "url": body}
+    raise SystemExit(f"unknown transport in {body!r} (use stdio: or http:)")
+
+
+def _parse_variables(raw: list[str] | None) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for item in raw or []:
+        if "=" not in item:
+            raise SystemExit(f"--var must be KEY=VALUE, got {item!r}")
+        k, _, v = item.partition("=")
+        out[k] = v
+    return out
+
+
+# ---------------------------------------------------------------------------
+# `register` / `unregister` — remote runtime registration
+# ---------------------------------------------------------------------------
+
+
+def cmd_register(args: argparse.Namespace) -> int:
+    if args.stdio and args.http:
+        print("pass only one of --stdio or --http", file=sys.stderr)
+        return 2
+    if args.stdio:
+        definition = _parse_upstream_spec("stdio:" + args.stdio)
+    elif args.http:
+        definition = _parse_upstream_spec(args.http if args.http.startswith(("http:", "https:")) else "http:" + args.http)
+    elif args.config_json:
+        try:
+            definition = json.loads(args.config_json)
+        except json.JSONDecodeError as exc:
+            print(f"--config-json is not valid JSON: {exc}", file=sys.stderr)
+            return 2
+    else:
+        print("pass --stdio, --http, or --config-json", file=sys.stderr)
+        return 2
+    body = {"name": args.name, "config": definition, "replace": args.replace}
+    result = _remote_call(
+        "POST",
+        args.url.rstrip("/") + "/admin/api/upstreams",
+        args.token_env,
+        body=body,
+    )
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+def cmd_unregister(args: argparse.Namespace) -> int:
+    result = _remote_call(
+        "DELETE",
+        args.url.rstrip("/") + f"/admin/api/upstreams/{args.name}",
+        args.token_env,
+    )
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# `discover` / `import` — bring MCP servers in from other clients
+# ---------------------------------------------------------------------------
+
+
+def cmd_discover(args: argparse.Namespace) -> int:
+    # Local-only: read client config files directly without talking to a proxy.
+    summary = discover_all()
+    if args.json:
+        print(json.dumps(summary, indent=2))
+        return 0
+    for client in summary["clients"]:
+        header = f"{client['display_name']} ({client['client_id']})"
+        if not client["detected"]:
+            print(f"{header}: not detected")
+            continue
+        print(f"{header}: {client['config_path']}")
+        for upstream in client["upstreams"]:
+            transport = upstream["config"].get("type", "?")
+            print(f"  - {upstream['name']} [{transport}]")
+        if not client["upstreams"]:
+            print("  (no MCP servers configured)")
+    return 0
+
+
+def cmd_import(args: argparse.Namespace) -> int:
+    try:
+        importer = get_importer(args.client)
+    except KeyError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    discovered = importer.read()
+    if not discovered:
+        print(f"no MCP servers found in {args.client}", file=sys.stderr)
+        return 1
+    wanted = set(args.name or [])
+    entries = [u for u in discovered if not wanted or u.name in wanted]
+    if not entries:
+        print(
+            f"none of --name {sorted(wanted)} matched {args.client} servers "
+            f"{[u.name for u in discovered]}",
+            file=sys.stderr,
+        )
+        return 1
+    if args.dry_run:
+        print(json.dumps({"imported": [u.to_dict() for u in entries]}, indent=2))
+        return 0
+    result = _remote_call(
+        "POST",
+        args.url.rstrip("/") + "/admin/api/discovery/import",
+        args.token_env,
+        body={
+            "client": args.client,
+            "upstreams": [u.name for u in entries],
+            "replace": args.replace,
+        },
+    )
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# `catalog` — browse + install bundled MCP servers
+# ---------------------------------------------------------------------------
+
+
+def cmd_catalog_list(args: argparse.Namespace) -> int:
+    catalog = load_catalog()
+    entries = catalog.search(args.query or "", category=args.category)
+    if args.json:
+        print(json.dumps({"entries": [e.to_dict() for e in entries]}, indent=2))
+        return 0
+    if not entries:
+        print("no matching catalog entries")
+        return 0
+    for entry in entries:
+        print(f"{entry.id:<18} [{entry.category:<12}] {entry.name}")
+        if entry.description:
+            print(f"  {entry.description}")
+    return 0
+
+
+def cmd_catalog_install(args: argparse.Namespace) -> int:
+    catalog = load_catalog()
+    entry = catalog.get(args.id)
+    if entry is None:
+        print(f"catalog entry {args.id!r} not found", file=sys.stderr)
+        return 2
+    variables = _parse_variables(args.var)
+    try:
+        name, definition = entry.materialize(name=args.name, variables=variables)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if args.dry_run:
+        print(json.dumps({"name": name, "config": definition}, indent=2))
+        return 0
+    result = _remote_call(
+        "POST",
+        args.url.rstrip("/") + "/admin/api/catalog/install",
+        args.token_env,
+        body={
+            "id": args.id,
+            "name": args.name,
+            "variables": variables,
+            "replace": args.replace,
+        },
+    )
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # argparse wiring
 # ---------------------------------------------------------------------------
 
@@ -277,6 +486,99 @@ def main(argv: list[str] | None = None) -> int:
     stdio.add_argument("--upstream", default=None, help="Target upstream name")
     stdio.add_argument("--mount-path", default="/mcp", help="Proxy mount path")
     stdio.set_defaults(func=cmd_stdio)
+
+    # register / unregister --------------------------------------------------
+
+    register = subparsers.add_parser(
+        "register",
+        help="Register a new upstream on a running MCPy proxy",
+    )
+    register.add_argument("--url", default="http://127.0.0.1:8000", help="MCPy proxy base URL")
+    register.add_argument("--token-env", default=None, help="Env var with bearer token")
+    register.add_argument("--name", required=True, help="Upstream name")
+    register.add_argument("--stdio", default=None, help="stdio command line, e.g. 'python -m foo'")
+    register.add_argument("--http", default=None, help="HTTP upstream URL")
+    register.add_argument(
+        "--config-json",
+        default=None,
+        help="Full upstream definition as a JSON string (alternative to --stdio/--http)",
+    )
+    register.add_argument("--replace", action="store_true", help="Overwrite if upstream exists")
+    register.set_defaults(func=cmd_register)
+
+    unregister = subparsers.add_parser(
+        "unregister",
+        help="Remove an upstream from a running MCPy proxy",
+    )
+    unregister.add_argument("--url", default="http://127.0.0.1:8000", help="MCPy proxy base URL")
+    unregister.add_argument("--token-env", default=None, help="Env var with bearer token")
+    unregister.add_argument("--name", required=True, help="Upstream name to remove")
+    unregister.set_defaults(func=cmd_unregister)
+
+    # discover / import ------------------------------------------------------
+
+    discover = subparsers.add_parser(
+        "discover",
+        help="Scan local client configs (Claude Desktop/Code, Cursor, Windsurf, Continue) for MCP servers",
+    )
+    discover.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    discover.set_defaults(func=cmd_discover)
+
+    importer = subparsers.add_parser(
+        "import",
+        help="Import MCP servers from another client into a running MCPy proxy",
+    )
+    importer.add_argument(
+        "--client",
+        required=True,
+        choices=list(IMPORTERS.keys()),
+        help="Source client to import from",
+    )
+    importer.add_argument(
+        "--name",
+        action="append",
+        help="Only import upstreams with this name (repeatable). Default: import all.",
+    )
+    importer.add_argument("--url", default="http://127.0.0.1:8000", help="MCPy proxy base URL")
+    importer.add_argument("--token-env", default=None, help="Env var with bearer token")
+    importer.add_argument("--replace", action="store_true", help="Overwrite existing upstreams")
+    importer.add_argument("--dry-run", action="store_true", help="Preview without calling the proxy")
+    importer.set_defaults(func=cmd_import)
+
+    # catalog ----------------------------------------------------------------
+
+    catalog = subparsers.add_parser(
+        "catalog",
+        help="Browse and install MCP servers from the bundled catalog",
+    )
+    catalog_sub = catalog.add_subparsers(dest="catalog_command", required=True)
+
+    catalog_list = catalog_sub.add_parser("list", help="List catalog entries")
+    catalog_list.add_argument("--query", "-q", default="", help="Search query")
+    catalog_list.add_argument("--category", default=None, help="Filter by category")
+    catalog_list.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    catalog_list.set_defaults(func=cmd_catalog_list)
+
+    catalog_install = catalog_sub.add_parser(
+        "install", help="Install a catalog entry as an upstream on a running MCPy proxy"
+    )
+    catalog_install.add_argument("id", help="Catalog entry id (e.g. filesystem, github)")
+    catalog_install.add_argument("--name", default=None, help="Upstream name (defaults to catalog id)")
+    catalog_install.add_argument(
+        "--var",
+        action="append",
+        metavar="KEY=VALUE",
+        help="Set a catalog variable (repeatable)",
+    )
+    catalog_install.add_argument("--url", default="http://127.0.0.1:8000", help="MCPy proxy base URL")
+    catalog_install.add_argument("--token-env", default=None, help="Env var with bearer token")
+    catalog_install.add_argument("--replace", action="store_true", help="Overwrite if upstream exists")
+    catalog_install.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Preview the materialised upstream config without calling the proxy",
+    )
+    catalog_install.set_defaults(func=cmd_catalog_install)
 
     args = parser.parse_args(argv)
     return int(args.func(args) or 0)

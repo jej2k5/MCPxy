@@ -87,3 +87,54 @@ export interface AppConfig {
   telemetry?: Record<string, unknown>;
   upstreams?: Record<string, Record<string, unknown>>;
 }
+
+export interface CatalogVariable {
+  name: string;
+  description: string;
+  required: boolean;
+  default?: string;
+  secret: boolean;
+}
+
+export interface CatalogEntry {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  homepage: string;
+  transport: "stdio" | "http";
+  install_hint: string;
+  tags: string[];
+  variables: CatalogVariable[];
+  command?: string;
+  args?: string[];
+  url?: string;
+  env?: Record<string, string>;
+}
+
+export interface CatalogResponse {
+  version: number;
+  updated_at: string;
+  categories: string[];
+  entries: CatalogEntry[];
+}
+
+export interface DiscoveredUpstream {
+  source_client: string;
+  name: string;
+  config: Record<string, unknown>;
+  origin_path: string;
+  warnings: string[];
+}
+
+export interface DiscoveryClient {
+  client_id: string;
+  display_name: string;
+  config_path: string | null;
+  detected: boolean;
+  upstreams: DiscoveredUpstream[];
+}
+
+export interface DiscoveryResponse {
+  clients: DiscoveryClient[];
+}
