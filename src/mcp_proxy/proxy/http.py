@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 import httpx
 
 from mcp_proxy.auth.strategies import NoAuthStrategy, build_strategy
-from mcp_proxy.config import HttpUpstreamConfig, OAuth2AuthConfig
+from mcp_proxy.config import (
+    HttpUpstreamConfig,
+    HttpUpstreamTlsConfig,
+    OAuth2AuthConfig,
+)
 from mcp_proxy.proxy.base import UpstreamTransport
 
 logger = logging.getLogger(__name__)
@@ -50,6 +55,7 @@ class HttpUpstreamTransport(UpstreamTransport):
         # to a model once so we can pattern-match cleanly.
         raw_auth = settings.get("auth")
         self.auth_config = self._coerce_auth(raw_auth)
+        self.tls_config = self._coerce_tls(settings.get("tls"))
         self._oauth_manager = settings.get("_oauth_manager")
         self._auth_strategy = None  # lazily bound in start()
         self._client: httpx.AsyncClient | None = None
@@ -71,6 +77,77 @@ class HttpUpstreamTransport(UpstreamTransport):
         from mcp_proxy.config import HttpAuthConfig
 
         return TypeAdapter(HttpAuthConfig).validate_python(raw)
+
+    @staticmethod
+    def _coerce_tls(raw: Any) -> HttpUpstreamTlsConfig | None:
+        if raw is None:
+            return None
+        if isinstance(raw, HttpUpstreamTlsConfig):
+            return raw
+        return HttpUpstreamTlsConfig.model_validate(raw)
+
+    # ------------------------------------------------------------------
+    # httpx kwarg builders
+    # ------------------------------------------------------------------
+
+    def _build_tls_kwargs(self) -> dict[str, Any]:
+        """Translate :class:`HttpUpstreamTlsConfig` into ``httpx.AsyncClient`` kwargs.
+
+        ``verify`` maps straight through. ``cert`` takes httpx's
+        ``(cert, key)`` or ``(cert, key, password)`` tuple shape, or a
+        bare cert path when there's no separate key. Missing files fail
+        fast at ``start()`` time so operators get a clean RuntimeError
+        instead of a late connection-reset when the first request fires.
+        """
+        tls = self.tls_config
+        if tls is None:
+            return {}
+
+        kwargs: dict[str, Any] = {}
+
+        if tls.verify is False:
+            logger.warning(
+                "upstream %r: TLS verification disabled — "
+                "connections to %s will accept any certificate",
+                self.name,
+                self.url,
+            )
+            kwargs["verify"] = False
+        elif isinstance(tls.verify, str):
+            ca_path = Path(tls.verify)
+            if not ca_path.is_file():
+                raise RuntimeError(
+                    f"upstream {self.name!r}: tls.verify CA bundle not found: {tls.verify}"
+                )
+            kwargs["verify"] = str(ca_path)
+        # verify is True (default) → httpx uses the system CA bundle; no
+        # kwarg needed.
+
+        if tls.client_cert:
+            cert_path = Path(tls.client_cert)
+            if not cert_path.is_file():
+                raise RuntimeError(
+                    f"upstream {self.name!r}: tls.client_cert not found: {tls.client_cert}"
+                )
+            if tls.client_key:
+                key_path = Path(tls.client_key)
+                if not key_path.is_file():
+                    raise RuntimeError(
+                        f"upstream {self.name!r}: tls.client_key not found: {tls.client_key}"
+                    )
+                if tls.client_key_password:
+                    kwargs["cert"] = (
+                        str(cert_path),
+                        str(key_path),
+                        tls.client_key_password,
+                    )
+                else:
+                    kwargs["cert"] = (str(cert_path), str(key_path))
+            else:
+                # Combined cert+key PEM.
+                kwargs["cert"] = str(cert_path)
+
+        return kwargs
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -99,10 +176,13 @@ class HttpUpstreamTransport(UpstreamTransport):
         else:
             self._auth_strategy = NoAuthStrategy()
 
+        tls_kwargs = self._build_tls_kwargs()
+
         self._client = httpx.AsyncClient(
             timeout=self.timeout_s,
             headers=merged_headers or None,
             auth=auth_obj,
+            **tls_kwargs,
         )
 
     async def stop(self) -> None:
@@ -135,9 +215,16 @@ class HttpUpstreamTransport(UpstreamTransport):
         auth_type = "none"
         if self.auth_config is not None:
             auth_type = getattr(self.auth_config, "type", type(self.auth_config).__name__)
+        tls_state: dict[str, Any] | None = None
+        if self.tls_config is not None:
+            tls_state = {
+                "verify": self.tls_config.verify,
+                "mtls": bool(self.tls_config.client_cert),
+            }
         return {
             "type": "http",
             "url": self.url,
             "started": self._client is not None,
             "auth": auth_type,
+            "tls": tls_state,
         }

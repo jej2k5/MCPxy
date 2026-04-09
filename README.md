@@ -186,6 +186,41 @@ mcp-proxy serve --no-tls
 > in the client's OS keychain or pass `--no-tls` to MCPy if you'd
 > rather keep the loopback plaintext.
 
+### Outbound TLS to upstream MCP servers
+
+For HTTPS upstreams behind a private CA or that require mutual TLS,
+each upstream can carry a `tls` block:
+
+```json
+{
+  "upstreams": {
+    "internal-mcp": {
+      "type": "http",
+      "url": "https://mcp.internal.corp/rpc",
+      "tls": {
+        "verify": "/etc/mcpy/corp-ca.pem",
+        "client_cert": "/etc/mcpy/mcpy-client.pem",
+        "client_key": "/etc/mcpy/mcpy-client.key",
+        "client_key_password": "${secret:INTERNAL_CLIENT_KEY_PW}"
+      }
+    }
+  }
+}
+```
+
+Fields:
+
+| field | type | notes |
+|---|---|---|
+| `verify` | `true` \| `false` \| `str` | `true` (default) uses the system CA bundle via certifi; `false` disables verification entirely and logs a loud warning — **not recommended**; a string is treated as a path to a PEM-encoded CA bundle. |
+| `client_cert` | `str` | Path to the client certificate PEM. Presented during the TLS handshake for mTLS. |
+| `client_key` | `str` | Path to the client private key PEM. Required when `client_cert` is a standalone cert; omit it if the cert PEM bundles the key inline. |
+| `client_key_password` | `str` | Password for an encrypted `client_key`. Flows through `${env:}` / `${secret:}` expansion and is redacted in admin API responses. |
+
+Missing cert/key/CA files fail fast at upstream start time with a
+clear `RuntimeError` instead of a connection reset on the first
+request.
+
 TLS settings are **not hot-reloadable** — the listener's SSL context is
 bound at startup, so the atomic-apply pipeline rejects any config
 change that alters the `tls` block with a clear "restart required"

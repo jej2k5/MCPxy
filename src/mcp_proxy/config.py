@@ -283,6 +283,45 @@ HttpAuthConfig = (
 )
 
 
+class HttpUpstreamTlsConfig(BaseModel):
+    """Per-upstream outbound TLS settings for HTTP transports.
+
+    Thread through to ``httpx.AsyncClient``'s ``verify`` and ``cert``
+    parameters so MCPy can talk to upstream MCP servers that sit behind
+    a private CA or require client certificate (mTLS) authentication.
+
+    Fields:
+
+    * ``verify`` — ``True`` (default, use system CA bundle via certifi),
+      ``False`` (disable verification — **not recommended**, surfaces a
+      clear warning at startup), or a path to a PEM-encoded CA bundle.
+    * ``client_cert`` — path to the client certificate PEM. When set,
+      MCPy presents this cert to the upstream during the TLS handshake.
+    * ``client_key`` — path to the client private key PEM. Required
+      when ``client_cert`` is set unless the cert file bundles both.
+    * ``client_key_password`` — password for an encrypted client key.
+      Flows through the normal ``${env:NAME}`` / ``${secret:NAME}``
+      expansion pipeline so it doesn't sit in cleartext.
+    """
+
+    verify: bool | str = True
+    client_cert: str | None = None
+    client_key: str | None = None
+    client_key_password: str | None = None
+
+    @model_validator(mode="after")
+    def _validate(self) -> "HttpUpstreamTlsConfig":
+        if self.client_key and not self.client_cert:
+            raise ValueError(
+                "tls.client_key requires tls.client_cert"
+            )
+        if self.client_key_password and not self.client_key:
+            raise ValueError(
+                "tls.client_key_password requires tls.client_key"
+            )
+        return self
+
+
 class HttpUpstreamConfig(BaseModel):
     """HTTP upstream configuration."""
 
@@ -291,6 +330,7 @@ class HttpUpstreamConfig(BaseModel):
     headers: dict[str, str] = Field(default_factory=dict)
     auth: HttpAuthConfig | None = Field(default=None, discriminator="type")
     timeout_s: float = 30.0
+    tls: HttpUpstreamTlsConfig | None = None
 
 
 UpstreamConfig = StdioUpstreamConfig | HttpUpstreamConfig | dict[str, Any]
@@ -468,4 +508,10 @@ def redact_secrets(payload: dict[str, Any]) -> dict[str, Any]:
                 for k in list(headers.keys()):
                     if _looks_secret_shaped(k):
                         headers[k] = "***REDACTED***"
+            upstream_tls = settings.get("tls")
+            if (
+                isinstance(upstream_tls, dict)
+                and upstream_tls.get("client_key_password")
+            ):
+                upstream_tls["client_key_password"] = "***REDACTED***"
     return redacted
