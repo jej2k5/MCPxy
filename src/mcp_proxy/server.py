@@ -53,7 +53,19 @@ from mcp_proxy.proxy.manager import UpstreamManager
 from mcp_proxy.routing import resolve_upstream
 from mcp_proxy.runtime import RuntimeConfigManager
 from mcp_proxy.secrets import SecretsManager, SecretStoreError
-from mcp_proxy.storage.config_store import ConfigStore, OnboardingState
+from mcp_proxy.storage.bootstrap import (
+    BootstrapConfig,
+    write_bootstrap,
+)
+from mcp_proxy.storage.config_store import ConfigStore, OnboardingState, open_store
+from mcp_proxy.storage.db import (
+    DatabaseError,
+    _assemble_url_from_parts,
+    available_dialects,
+    dialect_of,
+    probe_connection,
+    sanitize_url,
+)
 from mcp_proxy.telemetry.pipeline import TelemetryPipeline
 
 
@@ -596,8 +608,48 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
     # First-run onboarding
     # ------------------------------------------------------------------
 
+    # Serialises the hot-swap path in ``/admin/api/onboarding/set_database``
+    # so concurrent wizard clicks can't half-swap the store reference.
+    _database_swap_lock = asyncio.Lock()
+
     def _current_onboarding() -> OnboardingState | None:
         return state.config_store.get_onboarding_state()
+
+    def _state_dir() -> Path:
+        """Return the directory the proxy uses for runtime state.
+
+        We read it off the SecretsManager rather than recomputing the
+        default candidates so a test that pins ``state_dir`` explicitly
+        is respected by the onboarding database endpoints too.
+        """
+        return Path(state.secrets_manager.state_dir)
+
+    def _onboarding_database_block() -> dict[str, Any]:
+        """Return the structured ``database`` block exposed by status.
+
+        Shape:
+          {
+            "current_url_masked": "sqlite:////var/lib/mcpy/mcpy.db",
+            "current_dialect": "sqlite",
+            "is_default": true,
+            "bootstrap_file_present": false,
+            "available_dialects": ["sqlite", "postgresql"],
+          }
+        """
+        raw_url = str(state.config_store.engine.url)
+        masked = sanitize_url(raw_url)
+        dialect = dialect_of(raw_url)
+        sd = _state_dir()
+        default_sqlite = f"sqlite:///{sd / 'mcpy.db'}"
+        is_default = raw_url == default_sqlite
+        bootstrap_present = (sd / "bootstrap.json").exists()
+        return {
+            "current_url_masked": masked,
+            "current_dialect": dialect,
+            "is_default": is_default,
+            "bootstrap_file_present": bootstrap_present,
+            "available_dialects": available_dialects(),
+        }
 
     def _onboarding_public(obstate: OnboardingState | None) -> dict[str, Any]:
         if obstate is None:
@@ -606,6 +658,7 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
                 "completed": False,
                 "expired": False,
                 "required": False,
+                "database": _onboarding_database_block(),
             }
         base = obstate.to_public_dict(ttl_s=_onboarding_ttl())
         # ``required`` tells the frontend whether to route straight to
@@ -618,6 +671,7 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
             and not base["completed"]
             and obstate.admin_token_set_at is None
         )
+        base["database"] = _onboarding_database_block()
         return base
 
     def _require_onboarding_access(request: Request) -> OnboardingState:
@@ -823,6 +877,274 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
             {"event": "onboarding_finished"}
         )
         return JSONResponse(_onboarding_public(finished))
+
+    def _build_url_from_body(body: dict[str, Any]) -> str:
+        """Build a database URL from an onboarding request body.
+
+        The wizard can send either a raw ``url`` field (escape hatch
+        for exotic URIs the form-based builder can't express) or a
+        structured block with ``dialect``/``host``/``port``/``user``/
+        ``password``/``database``/``sslmode``. Structured requests are
+        run through SQLAlchemy's URL constructor so values are escaped
+        correctly and typos fail fast with a 400.
+        """
+        raw_url = body.get("url")
+        if isinstance(raw_url, str) and raw_url.strip():
+            if any(ch in raw_url for ch in ("\r", "\n")):
+                raise HTTPException(
+                    status_code=400, detail="database URL may not contain newlines"
+                )
+            return raw_url.strip()
+        dialect = body.get("dialect")
+        if not isinstance(dialect, str) or not dialect:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "body requires either 'url' or 'dialect' + connection fields"
+                ),
+            )
+        port_raw = body.get("port")
+        port: int | None = None
+        if port_raw is not None and port_raw != "":
+            try:
+                port = int(port_raw)  # type: ignore[arg-type]
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=400, detail=f"port must be an integer: {exc}"
+                )
+            if port < 1 or port > 65535:
+                raise HTTPException(
+                    status_code=400, detail="port must be between 1 and 65535"
+                )
+        query_args: dict[str, str] = {}
+        sslmode = body.get("sslmode")
+        if isinstance(sslmode, str) and sslmode:
+            query_args["sslmode"] = sslmode
+        try:
+            return _assemble_url_from_parts(
+                dialect=dialect,
+                host=body.get("host") or None,
+                port=port,
+                database=body.get("database") or None,
+                user=body.get("user") or body.get("username") or None,
+                password=body.get("password") or None,
+                query=query_args or None,
+            )
+        except DatabaseError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @app.post("/admin/api/onboarding/test_database")
+    async def admin_api_onboarding_test_database(request: Request) -> JSONResponse:
+        """Probe a candidate database URL without touching live state.
+
+        Opens a throwaway engine, runs ``SELECT 1``, and disposes. On
+        success the UI enables the "Save and continue" button for this
+        URL; on failure the inline error tells the operator exactly
+        what went wrong (driver missing, DNS unreachable, auth).
+
+        Never logs or returns the raw URL — only the masked form.
+        """
+        _require_onboarding_access(request)
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="request body must be an object")
+        try:
+            url = _build_url_from_body(body)
+        except HTTPException:
+            raise
+        try:
+            dialect = probe_connection(url)
+        except DatabaseError as exc:
+            # 200 with ok=false, not 500: this is expected user error
+            # and the UI renders the message inline.
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error": str(exc),
+                    "url_masked": sanitize_url(url),
+                }
+            )
+        return JSONResponse(
+            {
+                "ok": True,
+                "dialect": dialect,
+                "url_masked": sanitize_url(url),
+            }
+        )
+
+    def _hot_swap_store(new_store: ConfigStore) -> None:
+        """Rebind every cached reference to the new ConfigStore.
+
+        The existing ``state.config_store``, ``state.secrets_manager._store``
+        and ``state.runtime_config.store`` each hold a direct reference
+        to the old store (for performance — the hot path doesn't pay
+        for a getter indirection). The set_database handler updates
+        all three pointers inside a single lock scope so no admin
+        call can see a half-swapped state.
+
+        The secrets cache on the new store must already be populated
+        (via ``upsert_secret`` on each old secret) before this runs —
+        otherwise the first ``secret_resolver`` call after the swap
+        would return None and break config expansion.
+        """
+        old = state.config_store
+        state.config_store = new_store
+        # Private attribute by design — see ``SecretsManager.__init__``.
+        state.secrets_manager._store = new_store  # type: ignore[attr-defined]
+        state.runtime_config.store = new_store
+        # Dispose the old engine outside the caller's hot path; swallow
+        # errors so a broken dispose doesn't leave the swap half-done.
+        try:
+            old.close()
+        except Exception as exc:  # pragma: no cover - defensive
+            logging.getLogger(__name__).warning(
+                "storage: old engine dispose raised after hot-swap: %s", exc
+            )
+
+    @app.post("/admin/api/onboarding/set_database")
+    async def admin_api_onboarding_set_database(request: Request) -> JSONResponse:
+        """Point the proxy at a new database via the onboarding wizard.
+
+        Writes ``<state_dir>/bootstrap.json`` with the new URL and
+        attempts a hot-swap so the wizard can continue in the same
+        request without a restart. If the hot-swap fails (reference
+        holder we didn't catch, driver crash inside the pool, …) the
+        bootstrap file is *still* left in place, and the response sets
+        ``mode: "restart_required"`` — on the next start, the existing
+        ``cli.build_state`` path picks up the new URL automatically.
+
+        Requires the operator to acknowledge the Fernet-key warning
+        (``secrets_key_ack``) whenever they're switching dialect, so
+        nobody accidentally migrates to a remote Postgres without
+        realising they need to carry ``secrets.key`` along.
+        """
+        _require_onboarding_access(request)
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="request body must be an object")
+        try:
+            new_url = _build_url_from_body(body)
+        except HTTPException:
+            raise
+        new_dialect = dialect_of(new_url)
+        current_url = str(state.config_store.engine.url)
+        current_dialect = dialect_of(current_url)
+        dialect_changing = new_dialect != current_dialect
+        secrets_key_ack = bool(body.get("secrets_key_ack"))
+        if dialect_changing and not secrets_key_ack:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "switching dialect requires 'secrets_key_ack': true — "
+                    "the Fernet key at <state_dir>/secrets.key (or the "
+                    "MCPY_SECRETS_KEY env var) must be reachable from "
+                    "wherever the proxy runs, otherwise encrypted secrets "
+                    "cannot be decrypted after the swap."
+                ),
+            )
+        sd = _state_dir()
+        async with _database_swap_lock:
+            # 1. Probe the target URL and run migrations via open_store
+            #    so we know it's usable before touching anything live.
+            try:
+                probe_connection(new_url)
+            except DatabaseError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            fernet = state.secrets_manager._store._fernet  # type: ignore[attr-defined]
+            try:
+                new_store = open_store(
+                    new_url, fernet=fernet, state_dir=sd
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"failed to open target database: {exc}",
+                )
+            # 2. Copy pre-onboarding state into the new store. This is
+            #    a very small amount of data during onboarding: one
+            #    active-config row, any secrets the user happened to
+            #    create, and an onboarding row with the wizard's
+            #    current stamp (which is always pre-token here — the
+            #    gate rejects this endpoint once the token is set).
+            try:
+                active = state.config_store.get_active_config()
+                if active is not None:
+                    new_store.save_active_config(
+                        active, source="onboarding.set_database"
+                    )
+                # Copy secrets through the plaintext cache so the new
+                # store encrypts with its own (matching) Fernet handle.
+                old_cache = dict(
+                    state.config_store._secrets_cache  # type: ignore[attr-defined]
+                )
+                for name, rec in old_cache.items():
+                    new_store.upsert_secret(
+                        name, rec.value, description=rec.description
+                    )
+                new_store.ensure_onboarding_row()
+            except Exception as exc:
+                # The new DB is usable but we couldn't seed it. Clean
+                # up the engine and refuse the swap; bootstrap file
+                # hasn't been written yet, so nothing on disk changed.
+                try:
+                    new_store.close()
+                except Exception:
+                    pass
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"failed to seed target database: {exc}",
+                )
+            # 3. Persist bootstrap.json *before* the hot-swap so a
+            #    crash mid-swap still leaves the next start on the new
+            #    URL. The operator's next action after a crash is a
+            #    restart anyway.
+            try:
+                write_bootstrap(
+                    sd,
+                    BootstrapConfig(
+                        db_url=new_url,
+                        written_by=_client_ip(request),
+                    ),
+                )
+            except OSError as exc:
+                try:
+                    new_store.close()
+                except Exception:
+                    pass
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"failed to write bootstrap.json: {exc}",
+                )
+            # 4. Hot-swap the store references. If this step raises,
+            #    we fall back to restart-required mode: the bootstrap
+            #    file is already written, so the next start picks up
+            #    the new URL without any operator action.
+            mode = "hot_swap"
+            try:
+                _hot_swap_store(new_store)
+            except Exception as exc:
+                logging.getLogger(__name__).error(
+                    "storage: hot-swap failed, falling back to restart: %s", exc
+                )
+                mode = "restart_required"
+                try:
+                    new_store.close()
+                except Exception:
+                    pass
+        state.runtime_config.telemetry.emit_nowait(
+            {
+                "event": "onboarding_set_database",
+                "dialect": new_dialect,
+                "mode": mode,
+            }
+        )
+        return JSONResponse(
+            {
+                "ok": True,
+                "mode": mode,
+                "onboarding": _onboarding_public(_current_onboarding()),
+            }
+        )
 
     @app.get("/admin/api/config")
     async def admin_api_config(request: Request) -> JSONResponse:

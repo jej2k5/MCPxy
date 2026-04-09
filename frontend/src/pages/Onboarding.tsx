@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowRight, Check, Copy, KeyRound, RefreshCcw, Sparkles } from "lucide-react";
+import {
+  ArrowRight,
+  Check,
+  Copy,
+  Database,
+  KeyRound,
+  RefreshCcw,
+  Sparkles,
+} from "lucide-react";
 import {
   apiGet,
   apiPost,
@@ -9,8 +17,13 @@ import {
 import type {
   CatalogEntry,
   CatalogResponse,
+  DatabaseDialect,
+  OnboardingDatabaseInfo,
+  OnboardingDatabaseRequest,
+  OnboardingSetDatabaseResponse,
   OnboardingStatus,
   OnboardingSetTokenResponse,
+  OnboardingTestDatabaseResponse,
 } from "../api/types";
 
 /**
@@ -24,16 +37,22 @@ import type {
  * Flow:
  *
  *   Step 1  Welcome + what the wizard will do in the next ~2 minutes.
- *   Step 2  Admin token — generate client-side or paste one, copy, ack,
+ *   Step 2  Storage backend — stay on the default SQLite or point the
+ *           proxy at Postgres/MySQL. On non-SQLite picks we POST to
+ *           ``/admin/api/onboarding/set_database`` which writes
+ *           ``<state_dir>/bootstrap.json`` and hot-swaps the store.
+ *           Falls back to a "restart to continue" screen if the
+ *           backend can't hot-swap cleanly.
+ *   Step 3  Admin token — generate client-side or paste one, copy, ack,
  *           POST /admin/api/onboarding/set_admin_token. The token is
  *           also stashed in ``localStorage`` via ``setToken`` so the
  *           subsequent dashboard load is already authenticated.
- *   Step 3  Optional first MCP server from a curated slice of the
+ *   Step 4  Optional first MCP server from a curated slice of the
  *           bundled catalog. Skip button.
- *   Step 4  Finish → POST /admin/api/onboarding/finish, redirect.
+ *   Step 5  Finish → POST /admin/api/onboarding/finish, redirect.
  */
 
-type Step = 1 | 2 | 3 | 4;
+type Step = 1 | 2 | 3 | 4 | 5;
 
 const CURATED_CATALOG_IDS = [
   "filesystem",
@@ -104,11 +123,13 @@ function Stepper({ step }: { step: Step }) {
     <div className="flex flex-wrap items-center gap-4 text-sm">
       <StepPill n={1} active={step === 1} done={step > 1} label="Welcome" />
       <span className="text-slate-600">—</span>
-      <StepPill n={2} active={step === 2} done={step > 2} label="Admin token" />
+      <StepPill n={2} active={step === 2} done={step > 2} label="Storage" />
       <span className="text-slate-600">—</span>
-      <StepPill n={3} active={step === 3} done={step > 3} label="First server" />
+      <StepPill n={3} active={step === 3} done={step > 3} label="Admin token" />
       <span className="text-slate-600">—</span>
-      <StepPill n={4} active={step === 4} done={step > 4} label="Finish" />
+      <StepPill n={4} active={step === 4} done={step > 4} label="First server" />
+      <span className="text-slate-600">—</span>
+      <StepPill n={5} active={step === 5} done={step > 5} label="Finish" />
     </div>
   );
 }
@@ -144,9 +165,16 @@ export default function Onboarding({
   }, []);
 
   // Start on the right step if the operator reloaded mid-flow.
+  // Storage (step 2) is skipped once the admin token has been stamped —
+  // the backend gate forbids set_database after that point.
   useEffect(() => {
-    if (status?.admin_token_set_at && step < 3) setStep(3);
+    if (status?.admin_token_set_at && step < 4) setStep(4);
   }, [status]);
+
+  // If the backend wrote bootstrap.json but couldn't hot-swap the
+  // store, we render a "restart required" screen instead of the
+  // normal wizard body.
+  const [restartRequired, setRestartRequired] = useState(false);
 
   return (
     <div className="min-h-screen bg-surface-950 text-slate-100">
@@ -171,61 +199,85 @@ export default function Onboarding({
         )}
 
         <div className="mt-8">
-          {step === 1 && <WelcomeStep onNext={() => setStep(2)} />}
-          {step === 2 && (
-            <TokenStep
-              busy={busy}
-              onBusy={setBusy}
-              onError={setError}
-              onNext={async (token) => {
-                try {
-                  setError(null);
-                  setBusy(true);
-                  const res = await onboardingPost<OnboardingSetTokenResponse>(
-                    "/admin/api/onboarding/set_admin_token",
-                    { token },
-                  );
-                  setStatus(res.onboarding);
-                  persistToken(token);
-                  setStep(3);
-                } catch (e) {
-                  setError(e instanceof Error ? e.message : String(e));
-                } finally {
-                  setBusy(false);
-                }
-              }}
-            />
-          )}
-          {step === 3 && (
-            <FirstServerStep
-              busy={busy}
-              onBusy={setBusy}
-              onError={setError}
-              onSkip={() => setStep(4)}
-              onInstalled={() => setStep(4)}
-            />
-          )}
-          {step === 4 && (
-            <FinishStep
-              busy={busy}
-              onBusy={setBusy}
-              onError={setError}
-              onFinish={async () => {
-                try {
-                  setError(null);
-                  setBusy(true);
-                  await onboardingPost<OnboardingStatus>(
-                    "/admin/api/onboarding/finish",
-                    {},
-                  );
-                  onComplete();
-                } catch (e) {
-                  setError(e instanceof Error ? e.message : String(e));
-                } finally {
-                  setBusy(false);
-                }
-              }}
-            />
+          {restartRequired ? (
+            <RestartRequiredCard info={status?.database} />
+          ) : (
+            <>
+              {step === 1 && <WelcomeStep onNext={() => setStep(2)} />}
+              {step === 2 && (
+                <StorageStep
+                  busy={busy}
+                  info={status?.database}
+                  onBusy={setBusy}
+                  onError={setError}
+                  onSkip={() => setStep(3)}
+                  onSwapped={async (mode) => {
+                    if (mode === "restart_required") {
+                      setRestartRequired(true);
+                      return;
+                    }
+                    await refreshStatus();
+                    setStep(3);
+                  }}
+                />
+              )}
+              {step === 3 && (
+                <TokenStep
+                  busy={busy}
+                  onBusy={setBusy}
+                  onError={setError}
+                  onNext={async (token) => {
+                    try {
+                      setError(null);
+                      setBusy(true);
+                      const res =
+                        await onboardingPost<OnboardingSetTokenResponse>(
+                          "/admin/api/onboarding/set_admin_token",
+                          { token },
+                        );
+                      setStatus(res.onboarding);
+                      persistToken(token);
+                      setStep(4);
+                    } catch (e) {
+                      setError(e instanceof Error ? e.message : String(e));
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                />
+              )}
+              {step === 4 && (
+                <FirstServerStep
+                  busy={busy}
+                  onBusy={setBusy}
+                  onError={setError}
+                  onSkip={() => setStep(5)}
+                  onInstalled={() => setStep(5)}
+                />
+              )}
+              {step === 5 && (
+                <FinishStep
+                  busy={busy}
+                  onBusy={setBusy}
+                  onError={setError}
+                  onFinish={async () => {
+                    try {
+                      setError(null);
+                      setBusy(true);
+                      await onboardingPost<OnboardingStatus>(
+                        "/admin/api/onboarding/finish",
+                        {},
+                      );
+                      onComplete();
+                    } catch (e) {
+                      setError(e instanceof Error ? e.message : String(e));
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                />
+              )}
+            </>
           )}
         </div>
       </div>
@@ -268,7 +320,461 @@ function WelcomeStep({ onNext }: { onNext: () => void }) {
 }
 
 // ---------------------------------------------------------------------------
-// Step 2 — Admin token
+// Step 2 — Storage backend
+// ---------------------------------------------------------------------------
+
+type DialectChoice = "sqlite" | "postgresql" | "mysql";
+
+const DIALECT_LABELS: Record<DialectChoice, string> = {
+  sqlite: "SQLite",
+  postgresql: "PostgreSQL",
+  mysql: "MySQL / MariaDB",
+};
+
+const DIALECT_DEFAULT_PORTS: Record<DialectChoice, number> = {
+  sqlite: 0,
+  postgresql: 5432,
+  mysql: 3306,
+};
+
+const DIALECT_EXTRA_HINT: Record<DialectChoice, string> = {
+  sqlite: "",
+  postgresql:
+    "psycopg2 driver not installed — run `pip install mcpy-proxy[postgres]` and restart the proxy.",
+  mysql:
+    "PyMySQL driver not installed — run `pip install mcpy-proxy[mysql]` and restart the proxy.",
+};
+
+function StorageStep({
+  info,
+  busy,
+  onBusy,
+  onError,
+  onSkip,
+  onSwapped,
+}: {
+  info: OnboardingDatabaseInfo | undefined;
+  busy: boolean;
+  onBusy: (v: boolean) => void;
+  onError: (msg: string | null) => void;
+  onSkip: () => void;
+  onSwapped: (mode: "hot_swap" | "restart_required") => void | Promise<void>;
+}) {
+  const available = info?.available_dialects ?? ["sqlite"];
+  const currentIsDefault = info?.is_default ?? true;
+  const [dialect, setDialect] = useState<DialectChoice>("sqlite");
+  const [host, setHost] = useState("localhost");
+  const [port, setPort] = useState<string>("5432");
+  const [database, setDatabase] = useState("mcpy");
+  const [user, setUser] = useState("");
+  const [password, setPassword] = useState("");
+  const [sslmode, setSslmode] = useState("");
+  const [rawUrl, setRawUrl] = useState("");
+  const [usingRaw, setUsingRaw] = useState(false);
+  const [ack, setAck] = useState(false);
+  const [testResult, setTestResult] = useState<
+    | { ok: true; dialect?: string; url_masked?: string }
+    | { ok: false; error: string }
+    | null
+  >(null);
+
+  // Switching dialect resets the form + test state so a stale "OK"
+  // from a previous URL can't gate the save button.
+  function pickDialect(next: DialectChoice) {
+    setDialect(next);
+    setTestResult(null);
+    setPort(String(DIALECT_DEFAULT_PORTS[next] || ""));
+    setUsingRaw(false);
+  }
+
+  function buildBody(): OnboardingDatabaseRequest {
+    if (usingRaw) {
+      return { url: rawUrl.trim(), secrets_key_ack: ack };
+    }
+    const portNum = port ? Number(port) : undefined;
+    return {
+      dialect,
+      host,
+      port: Number.isFinite(portNum) ? portNum : undefined,
+      database,
+      user,
+      password,
+      sslmode: sslmode || undefined,
+      secrets_key_ack: ack,
+    };
+  }
+
+  async function runTest() {
+    try {
+      onError(null);
+      onBusy(true);
+      setTestResult(null);
+      const res = await onboardingPost<OnboardingTestDatabaseResponse>(
+        "/admin/api/onboarding/test_database",
+        buildBody(),
+      );
+      if (res.ok) {
+        setTestResult({
+          ok: true,
+          dialect: res.dialect,
+          url_masked: res.url_masked,
+        });
+      } else {
+        setTestResult({ ok: false, error: res.error || "connection failed" });
+      }
+    } catch (e) {
+      setTestResult({
+        ok: false,
+        error: e instanceof Error ? e.message : String(e),
+      });
+    } finally {
+      onBusy(false);
+    }
+  }
+
+  async function saveAndContinue() {
+    if (dialect === "sqlite" && currentIsDefault && !usingRaw) {
+      // No-op: we're already on the default SQLite path, nothing to
+      // persist to bootstrap.json.
+      onSkip();
+      return;
+    }
+    try {
+      onError(null);
+      onBusy(true);
+      const res = await onboardingPost<OnboardingSetDatabaseResponse>(
+        "/admin/api/onboarding/set_database",
+        buildBody(),
+      );
+      if (res.ok) {
+        await onSwapped(res.mode);
+      } else {
+        onError("Save failed for unknown reason");
+      }
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e));
+    } finally {
+      onBusy(false);
+    }
+  }
+
+  const isRemote = dialect !== "sqlite" || usingRaw;
+  const saveDisabled =
+    busy ||
+    (isRemote && (!testResult || !testResult.ok || !ack));
+  const driverMissing =
+    dialect !== "sqlite" && !available.includes(dialect);
+
+  return (
+    <div className="card space-y-5">
+      <div className="space-y-2">
+        <div className="flex items-center gap-2">
+          <Database className="h-4 w-4 text-accent-400" />
+          <h2 className="text-lg font-semibold">
+            Where should MCPy store its config and secrets?
+          </h2>
+        </div>
+        <p className="text-sm text-slate-400">
+          MCPy stores its active config, upstream definitions, encrypted
+          secrets, and OAuth tokens in a single database. You can keep
+          the default file-based SQLite store or point the proxy at
+          your own PostgreSQL / MySQL.
+        </p>
+        {info && (
+          <p className="text-xs text-slate-500">
+            Current:{" "}
+            <span className="font-mono">{info.current_url_masked}</span>{" "}
+            ({info.current_dialect})
+          </p>
+        )}
+      </div>
+
+      <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+        {(Object.keys(DIALECT_LABELS) as DialectChoice[]).map((d) => {
+          const disabled = d !== "sqlite" && !available.includes(d);
+          const selected = dialect === d && !usingRaw;
+          return (
+            <button
+              key={d}
+              type="button"
+              disabled={disabled}
+              onClick={() => pickDialect(d)}
+              className={
+                "rounded-lg border p-3 text-left text-sm " +
+                (selected
+                  ? "border-accent-400 bg-accent-500/10 text-accent-200"
+                  : disabled
+                  ? "cursor-not-allowed border-surface-700 bg-surface-900 text-slate-500"
+                  : "border-surface-600 bg-surface-900 text-slate-200 hover:border-accent-400")
+              }
+            >
+              <div className="font-semibold">
+                {DIALECT_LABELS[d]}
+                {d === "sqlite" && (
+                  <span className="ml-2 rounded-full bg-surface-800 px-2 py-0.5 text-xs text-slate-300">
+                    Recommended
+                  </span>
+                )}
+              </div>
+              {d === "sqlite" && (
+                <div className="mt-1 text-xs text-slate-400">
+                  Zero setup. File-backed. Great for single-container
+                  deployments.
+                </div>
+              )}
+              {disabled && (
+                <div className="mt-1 text-xs text-err">
+                  {DIALECT_EXTRA_HINT[d]}
+                </div>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {driverMissing && (
+        <div className="rounded-lg border border-err/40 bg-err/10 px-4 py-3 text-sm text-err">
+          {DIALECT_EXTRA_HINT[dialect]}
+        </div>
+      )}
+
+      {dialect !== "sqlite" && !driverMissing && (
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div>
+              <label className="mb-1 block text-xs uppercase tracking-wider text-slate-400">
+                Host
+              </label>
+              <input
+                className="input"
+                value={host}
+                onChange={(e) => {
+                  setHost(e.target.value);
+                  setTestResult(null);
+                }}
+                disabled={usingRaw}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs uppercase tracking-wider text-slate-400">
+                Port
+              </label>
+              <input
+                className="input"
+                value={port}
+                onChange={(e) => {
+                  setPort(e.target.value);
+                  setTestResult(null);
+                }}
+                disabled={usingRaw}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs uppercase tracking-wider text-slate-400">
+                Database
+              </label>
+              <input
+                className="input"
+                value={database}
+                onChange={(e) => {
+                  setDatabase(e.target.value);
+                  setTestResult(null);
+                }}
+                disabled={usingRaw}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs uppercase tracking-wider text-slate-400">
+                SSL mode (optional)
+              </label>
+              <input
+                className="input"
+                placeholder="require, verify-full, …"
+                value={sslmode}
+                onChange={(e) => {
+                  setSslmode(e.target.value);
+                  setTestResult(null);
+                }}
+                disabled={usingRaw}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs uppercase tracking-wider text-slate-400">
+                User
+              </label>
+              <input
+                className="input"
+                value={user}
+                onChange={(e) => {
+                  setUser(e.target.value);
+                  setTestResult(null);
+                }}
+                disabled={usingRaw}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs uppercase tracking-wider text-slate-400">
+                Password
+              </label>
+              <input
+                type="password"
+                className="input"
+                value={password}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  setTestResult(null);
+                }}
+                disabled={usingRaw}
+              />
+            </div>
+          </div>
+
+          <details className="rounded-lg border border-surface-700 bg-surface-900 p-3 text-xs text-slate-400">
+            <summary className="cursor-pointer text-slate-300">
+              Paste a SQLAlchemy URL instead
+            </summary>
+            <div className="mt-3 space-y-2">
+              <input
+                className="input font-mono text-xs"
+                placeholder="postgresql+psycopg2://user:pass@host:5432/mcpy?sslmode=require"
+                value={rawUrl}
+                onChange={(e) => {
+                  setRawUrl(e.target.value);
+                  setUsingRaw(e.target.value.length > 0);
+                  setTestResult(null);
+                }}
+              />
+              <p>
+                Overrides the form fields above when set. Useful for exotic
+                connection strings (socket paths, multi-host pools).
+              </p>
+            </div>
+          </details>
+
+          <div className="rounded-lg border border-warn/40 bg-warn/10 px-4 py-3 text-xs text-warn">
+            <div className="font-semibold">Bring your Fernet key with you</div>
+            <p className="mt-1 text-warn/90">
+              Secrets are encrypted with a Fernet key stored at{" "}
+              <span className="font-mono">
+                &lt;state_dir&gt;/secrets.key
+              </span>
+              . If you're pointing the proxy at a remote database, make sure
+              this file is reachable from wherever the proxy runs — or set{" "}
+              <span className="font-mono">MCPY_SECRETS_KEY</span>. Without
+              it, encrypted secrets cannot be decrypted after the swap.
+            </p>
+            <label className="mt-2 flex items-start gap-2 text-warn">
+              <input
+                type="checkbox"
+                checked={ack}
+                onChange={(e) => setAck(e.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                I understand and have my Fernet key ready (or am happy to
+                re-create secrets from scratch).
+              </span>
+            </label>
+          </div>
+        </div>
+      )}
+
+      {testResult && (
+        <div
+          className={
+            "rounded-lg border px-4 py-3 text-sm " +
+            (testResult.ok
+              ? "border-ok/40 bg-ok/10 text-ok"
+              : "border-err/40 bg-err/10 text-err")
+          }
+        >
+          {testResult.ok ? (
+            <>
+              Connection OK
+              {testResult.dialect && <> ({testResult.dialect})</>}
+              {testResult.url_masked && (
+                <>
+                  {" — "}
+                  <span className="font-mono text-xs">
+                    {testResult.url_masked}
+                  </span>
+                </>
+              )}
+            </>
+          ) : (
+            <>Connection failed: {testResult.error}</>
+          )}
+        </div>
+      )}
+
+      <div className="flex flex-wrap justify-between gap-2">
+        <button className="btn" onClick={onSkip} disabled={busy}>
+          Skip — keep the default
+        </button>
+        <div className="flex gap-2">
+          {dialect !== "sqlite" && !driverMissing && (
+            <button className="btn" onClick={runTest} disabled={busy}>
+              Test connection
+            </button>
+          )}
+          <button
+            className="btn btn-primary"
+            onClick={saveAndContinue}
+            disabled={saveDisabled || driverMissing}
+          >
+            {busy ? "Saving…" : "Save and continue"}
+            <ArrowRight className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RestartRequiredCard({
+  info,
+}: {
+  info: OnboardingDatabaseInfo | undefined;
+}) {
+  return (
+    <div className="card space-y-4">
+      <div>
+        <h2 className="text-lg font-semibold text-warn">
+          Restart the proxy to continue
+        </h2>
+        <p className="mt-1 text-sm text-slate-400">
+          Your new database URL was written to{" "}
+          <span className="font-mono text-xs">
+            &lt;state_dir&gt;/bootstrap.json
+          </span>{" "}
+          but the proxy couldn't hot-swap its engine in place. Restart
+          the process and it will pick up the new URL automatically on
+          the next boot.
+        </p>
+      </div>
+      {info && (
+        <div className="rounded-lg border border-surface-700 bg-surface-900 px-4 py-3 text-xs text-slate-400">
+          <div>
+            New URL:{" "}
+            <span className="font-mono text-slate-200">
+              {info.current_url_masked}
+            </span>
+          </div>
+          <div>Dialect: {info.current_dialect}</div>
+        </div>
+      )}
+      <div className="text-xs text-slate-500">
+        Docker Compose:{" "}
+        <span className="font-mono">docker compose restart mcpy</span>.
+        Systemd:{" "}
+        <span className="font-mono">systemctl restart mcpy</span>.
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Step 3 — Admin token
 // ---------------------------------------------------------------------------
 
 function TokenStep({
@@ -408,7 +914,7 @@ function TokenStep({
 }
 
 // ---------------------------------------------------------------------------
-// Step 3 — Optional first server
+// Step 4 — Optional first server
 // ---------------------------------------------------------------------------
 
 function FirstServerStep({
@@ -560,7 +1066,7 @@ function FirstServerStep({
 }
 
 // ---------------------------------------------------------------------------
-// Step 4 — Finish
+// Step 5 — Finish
 // ---------------------------------------------------------------------------
 
 function FinishStep({
