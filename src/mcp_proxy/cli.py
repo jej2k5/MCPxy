@@ -24,8 +24,9 @@ from mcp_proxy.proxy.manager import UpstreamManager
 from mcp_proxy.secrets import SecretsManager, load_fernet
 from mcp_proxy.server import AppState, create_app
 from mcp_proxy.stdio_adapter import run_stdio_adapter
+from mcp_proxy.storage.bootstrap import BootstrapError, load_bootstrap
 from mcp_proxy.storage.config_store import ConfigStore, open_store
-from mcp_proxy.storage.db import _default_state_dir
+from mcp_proxy.storage.db import _default_state_dir, sanitize_url
 from mcp_proxy.telemetry.pipeline import TelemetryPipeline
 
 logger = logging.getLogger(__name__)
@@ -148,8 +149,43 @@ def build_state(config_path: str | None) -> AppState:
     # Load the Fernet cipher first; both ConfigStore and SecretsManager
     # need it, and we want exactly one cipher instance shared across them.
     fernet = load_fernet(state_dir)
-    db_url = os.getenv("MCPY_DB_URL")
-    store = open_store(db_url, fernet=fernet)
+    # Resolve the database URL the *same way* at every entry point:
+    #   1. MCPY_DB_URL env var (operator override in container deploys)
+    #   2. <state_dir>/bootstrap.json db_url (written by the onboarding wizard)
+    #   3. sqlite:///<state_dir>/mcpy.db default
+    # We pre-compute the source label here so the startup log line and
+    # later debugging can tell the three apart; the actual precedence
+    # lives in ``resolve_database_url`` which is what ``open_store``
+    # invokes internally.
+    db_url_env = os.getenv("MCPY_DB_URL")
+    bootstrap_cfg = None
+    if not db_url_env:
+        try:
+            bootstrap_cfg = load_bootstrap(state_dir)
+        except BootstrapError as exc:
+            # Bail out loudly rather than silently dropping back to the
+            # SQLite default — losing a Postgres URL the operator typed
+            # into the wizard would be worse than failing to start.
+            logger.error("bootstrap: %s", exc)
+            raise
+    if db_url_env:
+        db_url_source = "env:MCPY_DB_URL"
+        effective_db_url: str | None = db_url_env
+    elif bootstrap_cfg is not None and bootstrap_cfg.db_url:
+        db_url_source = "bootstrap.json"
+        effective_db_url = bootstrap_cfg.db_url
+    else:
+        db_url_source = "default"
+        effective_db_url = None  # ``open_store`` will build the SQLite default
+    store = open_store(effective_db_url, fernet=fernet, state_dir=state_dir)
+    # Log the masked URL (never the raw one — it may contain a password
+    # the operator pasted into the wizard form).
+    resolved_url = store.engine.url.render_as_string(hide_password=True)
+    logger.info(
+        "storage: opened database from %s (%s)",
+        db_url_source,
+        sanitize_url(str(resolved_url)),
+    )
 
     raw_config, source_label = _bootstrap_config_payload(store, config_path)
 

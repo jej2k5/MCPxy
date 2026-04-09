@@ -143,6 +143,16 @@ export interface DiscoveryResponse {
 // Onboarding
 // ---------------------------------------------------------------------------
 
+export type DatabaseDialect = "sqlite" | "postgresql" | "mysql" | string;
+
+export interface OnboardingDatabaseInfo {
+  current_url_masked: string;
+  current_dialect: DatabaseDialect;
+  is_default: boolean;
+  bootstrap_file_present: boolean;
+  available_dialects: DatabaseDialect[];
+}
+
 export interface OnboardingStatus {
   active: boolean;
   completed: boolean;
@@ -155,10 +165,40 @@ export interface OnboardingStatus {
   completed_by?: string | null;
   ttl_s?: number;
   expires_at?: number | null;
+  database?: OnboardingDatabaseInfo;
 }
 
 export interface OnboardingSetTokenResponse {
   applied: boolean;
+  onboarding: OnboardingStatus;
+}
+
+export interface OnboardingDatabaseRequest {
+  /** Raw SQLAlchemy URL. Mutually exclusive with the structured fields. */
+  url?: string;
+  dialect?: DatabaseDialect;
+  host?: string;
+  port?: number | null;
+  database?: string;
+  user?: string;
+  password?: string;
+  sslmode?: string;
+  /** Required on set_database when switching dialect. */
+  secrets_key_ack?: boolean;
+}
+
+export interface OnboardingTestDatabaseResponse {
+  ok: boolean;
+  dialect?: DatabaseDialect;
+  url_masked?: string;
+  error?: string;
+}
+
+export type OnboardingSetDatabaseMode = "hot_swap" | "restart_required";
+
+export interface OnboardingSetDatabaseResponse {
+  ok: boolean;
+  mode: OnboardingSetDatabaseMode;
   onboarding: OnboardingStatus;
 }
 

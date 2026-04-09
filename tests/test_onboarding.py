@@ -7,6 +7,9 @@ Covers the whole backend surface:
 - Auth bypass on the onboarding endpoints while inactive vs. active
 - ``/admin/api/onboarding/set_admin_token`` happy path + rejection
 - ``/admin/api/onboarding/add_upstream`` (optional step)
+- ``/admin/api/onboarding/test_database`` + ``set_database`` (hot-swap
+  + restart-fallback) — lets the wizard pick SQLite / Postgres / MySQL
+  from the UI instead of requiring env vars.
 - ``/admin/api/onboarding/finish`` (must come after set_admin_token)
 - The "onboarding_required" 503 middleware on every *other* admin path
 - 410 Gone after finish
@@ -584,4 +587,277 @@ def test_admin_api_open_once_token_is_configured(tmp_path: Path) -> None:
             headers={"Authorization": "Bearer a-very-long-and-random-token-value"},
         )
         assert r.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# /admin/api/onboarding/status ``database`` block
+# ---------------------------------------------------------------------------
+
+
+def test_status_includes_database_block(tmp_path: Path) -> None:
+    """The wizard's Storage step reads these fields to pick defaults,
+    populate the "currently using" line, and disable Postgres/MySQL
+    options when the driver isn't installed.
+    """
+    app, store = _build_app(tmp_path)
+    with TestClient(app) as client:
+        r = client.get("/admin/api/onboarding/status")
+        assert r.status_code == 200
+        body = r.json()
+        assert "database" in body
+        db = body["database"]
+        assert "current_url_masked" in db
+        assert "current_dialect" in db
+        assert db["current_dialect"] == "sqlite"
+        assert "available_dialects" in db
+        assert "sqlite" in db["available_dialects"]
+        assert db["bootstrap_file_present"] is False
     store.close()
+
+
+def test_status_database_block_present_even_without_row(tmp_path: Path) -> None:
+    """Status is unauthenticated and must be reachable during the
+    pre-first-run window when the onboarding row hasn't been seeded
+    yet — the database block must still render so the UI can fall
+    back to a sensible empty state.
+    """
+    app, store = _build_app(tmp_path, with_onboarding=False)
+    with TestClient(app) as client:
+        r = client.get("/admin/api/onboarding/status")
+        assert r.status_code == 200
+        body = r.json()
+        assert "database" in body
+        assert body["database"]["current_dialect"] == "sqlite"
+    store.close()
+
+
+# ---------------------------------------------------------------------------
+# /admin/api/onboarding/test_database
+# ---------------------------------------------------------------------------
+
+
+def test_test_database_with_valid_sqlite_url(tmp_path: Path) -> None:
+    app, store = _build_app(tmp_path)
+    target = tmp_path / "target.db"
+    with TestClient(app) as client:
+        r = client.post(
+            "/admin/api/onboarding/test_database",
+            json={"url": f"sqlite:///{target}"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["ok"] is True
+        assert body["dialect"] == "sqlite"
+        assert body["url_masked"].startswith("sqlite:")
+    store.close()
+
+
+def test_test_database_with_structured_body_rejects_missing_dialect(
+    tmp_path: Path,
+) -> None:
+    app, store = _build_app(tmp_path)
+    with TestClient(app) as client:
+        r = client.post("/admin/api/onboarding/test_database", json={"host": "h"})
+        assert r.status_code == 400
+        assert "dialect" in r.json()["detail"] or "url" in r.json()["detail"]
+    store.close()
+
+
+def test_test_database_rejects_in_memory_sqlite(tmp_path: Path) -> None:
+    app, store = _build_app(tmp_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/admin/api/onboarding/test_database",
+            json={"url": "sqlite:///:memory:"},
+        )
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is False
+        assert ":memory:" in body["error"]
+    store.close()
+
+
+def test_test_database_rejects_newline_in_url(tmp_path: Path) -> None:
+    app, store = _build_app(tmp_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/admin/api/onboarding/test_database",
+            json={"url": "sqlite:///x\ny.db"},
+        )
+        assert r.status_code == 400
+    store.close()
+
+
+def test_test_database_reports_error_without_raising(tmp_path: Path) -> None:
+    """Even for nonsense URLs the endpoint must return ok=false with a
+    message — it never 500s and never crashes the onboarding gate.
+    """
+    app, store = _build_app(tmp_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/admin/api/onboarding/test_database",
+            json={"url": "not-a-url-at-all"},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["ok"] is False
+        assert body["error"]
+    store.close()
+
+
+def test_test_database_blocked_after_finish(tmp_path: Path) -> None:
+    app, store = _build_app(tmp_path)
+    target = tmp_path / "target.db"
+    with TestClient(app) as client:
+        client.post(
+            "/admin/api/onboarding/set_admin_token",
+            json={"token": "a-very-long-and-random-token-value"},
+        )
+        client.post("/admin/api/onboarding/finish")
+        r = client.post(
+            "/admin/api/onboarding/test_database",
+            json={"url": f"sqlite:///{target}"},
+        )
+        assert r.status_code == 410
+    store.close()
+
+
+# ---------------------------------------------------------------------------
+# /admin/api/onboarding/set_database
+# ---------------------------------------------------------------------------
+
+
+def test_set_database_rejects_dialect_swap_without_ack(tmp_path: Path) -> None:
+    """Switching dialect without acknowledging the Fernet-key caveat
+    is a footgun; the backend must refuse it even if the UI somehow
+    manages to skip the checkbox.
+    """
+    app, store = _build_app(tmp_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/admin/api/onboarding/set_database",
+            json={
+                "url": "postgresql://u:p@example.invalid:5432/db",
+                "secrets_key_ack": False,
+            },
+        )
+        # 400 if psycopg2 is installed (driver check passes, ack check
+        # fires) or 400 regardless of driver state because ack fires
+        # before probing. Either way it's a 400.
+        assert r.status_code == 400
+        assert "secrets_key_ack" in r.json()["detail"]
+    store.close()
+
+
+def test_set_database_same_sqlite_url_is_noop_hot_swap(tmp_path: Path) -> None:
+    """Switching to the SQLite file the proxy is already using must
+    still succeed and report ``mode: hot_swap`` — same dialect → no
+    ack required, and the in-memory config survives unchanged.
+    """
+    app, store = _build_app(tmp_path)
+    current_url = str(store.engine.url)
+    with TestClient(app) as client:
+        r = client.post(
+            "/admin/api/onboarding/set_database",
+            json={"url": current_url},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["ok"] is True
+        assert body["mode"] == "hot_swap"
+
+
+def test_set_database_hot_swap_to_fresh_sqlite_file(tmp_path: Path) -> None:
+    """Full end-to-end hot-swap: point the wizard at a brand-new
+    SQLite file, confirm the bootstrap file is written, the onboarding
+    row is re-seeded on the target, and the proxy's live store now
+    answers reads from the new DB.
+    """
+    from mcp_proxy.storage.bootstrap import load_bootstrap
+
+    app, store = _build_app(tmp_path)
+    target = tmp_path / "state" / "new-target.db"
+    target_url = f"sqlite:///{target}"
+    with TestClient(app) as client:
+        # Same dialect → no ack needed.
+        r = client.post(
+            "/admin/api/onboarding/set_database",
+            json={"url": target_url},
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["ok"] is True
+        assert body["mode"] == "hot_swap"
+        # bootstrap.json is written with the new URL.
+        bootstrap = load_bootstrap(tmp_path / "state")
+        assert bootstrap is not None
+        assert bootstrap.db_url == target_url
+        # The target file exists and has the schema + config row.
+        assert target.exists()
+        # The next /status reflects the new current URL.
+        r = client.get("/admin/api/onboarding/status")
+        assert r.status_code == 200
+        db_block = r.json()["database"]
+        assert "new-target.db" in db_block["current_url_masked"]
+        assert db_block["bootstrap_file_present"] is True
+        # The wizard can still continue: set_admin_token works against
+        # the new store.
+        r = client.post(
+            "/admin/api/onboarding/set_admin_token",
+            json={"token": "a-very-long-and-random-token-value"},
+        )
+        assert r.status_code == 200, r.text
+
+
+def test_set_database_blocked_after_finish(tmp_path: Path) -> None:
+    app, store = _build_app(tmp_path)
+    with TestClient(app) as client:
+        client.post(
+            "/admin/api/onboarding/set_admin_token",
+            json={"token": "a-very-long-and-random-token-value"},
+        )
+        client.post("/admin/api/onboarding/finish")
+        r = client.post(
+            "/admin/api/onboarding/set_database",
+            json={"url": f"sqlite:///{tmp_path / 'whatever.db'}"},
+        )
+        assert r.status_code == 410
+    store.close()
+
+
+def test_set_database_refuses_invalid_url(tmp_path: Path) -> None:
+    app, store = _build_app(tmp_path)
+    with TestClient(app) as client:
+        r = client.post(
+            "/admin/api/onboarding/set_database",
+            json={"url": "not-a-url"},
+        )
+        assert r.status_code == 400
+    store.close()
+
+
+def test_bootstrap_file_resolves_to_new_url_on_restart(tmp_path: Path) -> None:
+    """Simulate a restart: write bootstrap.json then reopen the store
+    with no MCPY_DB_URL set. The new store must land on the bootstrap
+    URL, proving the second-boot path works end-to-end.
+    """
+    from mcp_proxy.storage.bootstrap import BootstrapConfig, write_bootstrap
+    from mcp_proxy.storage.db import resolve_database_url
+
+    state_dir = tmp_path / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    target = state_dir / "after-restart.db"
+    write_bootstrap(
+        state_dir,
+        BootstrapConfig(db_url=f"sqlite:///{target}"),
+    )
+    # Clear any env override the test runner might leave behind.
+    import os as _os
+
+    prior = _os.environ.pop("MCPY_DB_URL", None)
+    try:
+        resolved = resolve_database_url(None, state_dir=state_dir)
+        assert resolved == f"sqlite:///{target}"
+    finally:
+        if prior is not None:
+            _os.environ["MCPY_DB_URL"] = prior

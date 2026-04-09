@@ -22,12 +22,25 @@ Public entry points:
   if needed, and returns an initialised ``ConfigStore``.
 """
 
+from mcp_proxy.storage.bootstrap import (
+    BOOTSTRAP_FILENAME,
+    BootstrapConfig,
+    BootstrapError,
+    bootstrap_path,
+    clear_bootstrap,
+    load_bootstrap,
+    write_bootstrap,
+)
 from mcp_proxy.storage.config_store import ConfigStore, OnboardingState, open_store
 from mcp_proxy.storage.db import (
     DEFAULT_SQLITE_FILENAME,
     DatabaseError,
+    available_dialects,
     build_engine,
+    dialect_of,
+    probe_connection,
     resolve_database_url,
+    sanitize_url,
 )
 from mcp_proxy.storage.schema import (
     CURRENT_SCHEMA_VERSION,
@@ -40,18 +53,29 @@ from mcp_proxy.storage.schema import (
 )
 
 __all__ = [
+    "BOOTSTRAP_FILENAME",
+    "BootstrapConfig",
+    "BootstrapError",
     "ConfigStore",
     "CURRENT_SCHEMA_VERSION",
     "DatabaseError",
     "DEFAULT_SQLITE_FILENAME",
     "METADATA",
     "OnboardingState",
+    "available_dialects",
+    "bootstrap_path",
     "build_engine",
+    "clear_bootstrap",
     "config_history_table",
     "config_kv_table",
+    "dialect_of",
+    "load_bootstrap",
     "onboarding_table",
     "open_store",
+    "probe_connection",
     "resolve_database_url",
+    "sanitize_url",
     "secrets_table",
     "upstreams_table",
+    "write_bootstrap",
 ]

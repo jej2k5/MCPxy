@@ -629,15 +629,21 @@ def open_store(
     *,
     fernet: Fernet,
     echo: bool = False,
+    state_dir: Path | str | None = None,
 ) -> ConfigStore:
     """Open (or create), migrate, and warm a :class:`ConfigStore`.
 
     Typical call site::
 
         fernet = load_fernet(state_dir)
-        store = open_store(fernet=fernet)
+        store = open_store(fernet=fernet, state_dir=state_dir)
+
+    Passing ``state_dir`` threads the onboarding wizard's bootstrap
+    file through to :func:`resolve_database_url` so the URL precedence
+    (env var → bootstrap file → default) stays consistent across every
+    entry point (CLI bootstrap, tests, the runtime hot-swap path).
     """
-    engine = build_engine(url, echo=echo)
+    engine = build_engine(url, echo=echo, state_dir=state_dir)
     run_migrations(engine)
     store = ConfigStore(engine, fernet)
     store.load_all()

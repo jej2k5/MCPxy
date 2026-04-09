@@ -33,9 +33,15 @@ dependencies = [
   "cryptography>=42.0",
   # Persistent config + secrets store. SQLAlchemy Core (no ORM) gives us
   # a database-agnostic surface so operators can point MCPY_DB_URL at
-  # any SQLAlchemy-supported backend. The default sqlite:///<state_dir>/mcpy.db
-  # uses the stdlib sqlite3 driver and works out of the box; operators
-  # running postgres or mysql install psycopg2/PyMySQL themselves.
+  # any SQLAlchemy-supported backend — or configure it from the
+  # onboarding wizard, which writes <state_dir>/bootstrap.json that
+  # ``cli.build_state`` reads before opening the engine.
+  #
+  # The default sqlite:///<state_dir>/mcpy.db uses the stdlib sqlite3
+  # driver and always works out of the box. Postgres and MySQL live
+  # behind the ``[postgres]`` / ``[mysql]`` optional extras below so
+  # we don't force operators on the SQLite path to pull heavyweight
+  # compiled drivers they don't need.
   "sqlalchemy>=2.0",
 ]
 
@@ -45,6 +51,16 @@ dev = [
   "pytest-asyncio>=0.23.0",
   "ruff>=0.4.0",
   "mypy>=1.8.0",
+]
+# Installing ``mcpy-proxy[postgres]`` makes the onboarding wizard
+# offer "PostgreSQL" as a backend option — the driver probe in
+# ``mcp_proxy.storage.db.available_dialects`` looks for ``psycopg2``.
+postgres = [
+  "psycopg2-binary>=2.9",
+]
+# Same story for MySQL / MariaDB — the probe looks for ``pymysql``.
+mysql = [
+  "PyMySQL>=1.1",
 ]
 
 [project.scripts]
