@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import logging
 import os
@@ -10,6 +11,7 @@ import time
 from codecs import getincrementaldecoder
 import asyncio
 from collections import deque
+from collections.abc import Iterable
 from contextlib import asynccontextmanager, suppress
 from copy import deepcopy
 from pathlib import Path
@@ -84,11 +86,63 @@ def _onboarding_ttl() -> float:
         return float(DEFAULT_ONBOARDING_TTL_S)
 
 
-def _onboarding_allowed_clients() -> set[str]:
+def _parse_allowed_clients(
+    entries: Iterable[str],
+) -> tuple[set[str], list[ipaddress._BaseNetwork]]:
+    """Split a raw allowlist into literal strings and CIDR networks.
+
+    Entries that parse as an IP or CIDR (``ipaddress.ip_network`` with
+    ``strict=False``, so bare literals like ``127.0.0.1`` become /32
+    networks) are collected as networks. Everything else — including
+    the historical ``"localhost"`` and ``"testclient"`` sentinels —
+    stays as a literal string for exact-match fallback. This preserves
+    backwards compatibility with existing configs while adding CIDR
+    support for Docker NAT ranges, reverse-proxy subnets, and similar
+    operator needs.
+    """
+    literals: set[str] = set()
+    networks: list[ipaddress._BaseNetwork] = []
+    for entry in entries:
+        if not entry:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            literals.add(entry)
+    return literals, networks
+
+
+def _client_ip_allowed(
+    client_ip: str,
+    literals: set[str],
+    networks: list[ipaddress._BaseNetwork],
+) -> bool:
+    """Check whether ``client_ip`` matches the parsed allowlist.
+
+    Literal entries match exactly (so ``"testclient"`` and ``"localhost"``
+    still work). Network entries match by membership — a ``172.16.0.0/12``
+    entry admits any IP in that range. IPs that fail to parse (the
+    ``"testclient"`` / ``"unknown"`` sentinels) skip the network check
+    and fall through to literal comparison only.
+    """
+    if client_ip in literals:
+        return True
+    if not networks:
+        return False
+    try:
+        addr = ipaddress.ip_address(client_ip)
+    except ValueError:
+        return False
+    return any(addr in net for net in networks)
+
+
+def _onboarding_allowed_clients() -> tuple[set[str], list[ipaddress._BaseNetwork]]:
     raw = os.getenv("MCPY_ONBOARDING_ALLOWED_CLIENTS")
     if not raw:
-        return set(_DEFAULT_ONBOARDING_ALLOWED_CLIENTS)
-    return {item.strip() for item in raw.split(",") if item.strip()}
+        entries: list[str] = list(_DEFAULT_ONBOARDING_ALLOWED_CLIENTS)
+    else:
+        entries = [item.strip() for item in raw.split(",") if item.strip()]
+    return _parse_allowed_clients(entries)
 
 
 class InMemoryLogHandler(logging.Handler):
@@ -307,8 +361,10 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
 
     def require_admin_auth(request: Request) -> None:
         admin = state.runtime_config.config.admin
-        if admin.allowed_clients and _client_ip(request) not in admin.allowed_clients:
-            raise HTTPException(status_code=403, detail="forbidden")
+        if admin.allowed_clients:
+            literals, networks = _parse_allowed_clients(admin.allowed_clients)
+            if not _client_ip_allowed(_client_ip(request), literals, networks):
+                raise HTTPException(status_code=403, detail="forbidden")
         if admin.require_token:
             expected = _resolve_admin_bearer()
             if not expected:
@@ -593,9 +649,9 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
                     "restart the proxy to reopen it"
                 ),
             )
-        allowed = _onboarding_allowed_clients()
+        literals, networks = _onboarding_allowed_clients()
         client_ip = _client_ip(request)
-        if allowed and client_ip not in allowed:
+        if (literals or networks) and not _client_ip_allowed(client_ip, literals, networks):
             raise HTTPException(
                 status_code=403,
                 detail=(
