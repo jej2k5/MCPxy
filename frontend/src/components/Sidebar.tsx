@@ -7,6 +7,7 @@ import {
   FileText,
   LayoutDashboard,
   LogOut,
+  Network,
   Plug,
   Settings2,
   ShieldCheck,
@@ -16,6 +17,7 @@ import { setToken } from "../api/client";
 const items = [
   { to: "/overview", label: "Overview", icon: LayoutDashboard },
   { to: "/routes", label: "Routes", icon: Cable },
+  { to: "/graph", label: "Graph", icon: Network },
   { to: "/traffic", label: "Traffic", icon: Activity },
   { to: "/policies", label: "Policies", icon: ShieldCheck },
   { to: "/browse", label: "Browse", icon: Compass },
