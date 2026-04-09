@@ -28,6 +28,7 @@ services:
       MCP_PROXY_TOKEN: ${MCP_PROXY_TOKEN:-}
       MCPY_CONFIG: /etc/mcpy/config.json
       MCPY_LISTEN: 0.0.0.0:8000
+      MCPY_ONBOARDING_ALLOWED_CLIENTS: "127.0.0.1,::1,172.66.0.0/16"
     volumes:
       # Config is bind-mounted read-only. Edit on the host; restart to apply
       # anything the runtime config watcher doesn't hot-reload.
