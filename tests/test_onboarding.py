@@ -344,6 +344,82 @@ def test_onboarding_loopback_only_by_default(
     store.close()
 
 
+def test_parse_allowed_clients_splits_literals_and_networks() -> None:
+    """The parser keeps sentinel strings like ``testclient`` / ``localhost``
+    as literals while coercing valid IPs/CIDRs into network objects.
+    Bare IPs become /32 or /128 networks via ``strict=False``.
+    """
+    from mcp_proxy.server import _parse_allowed_clients
+
+    literals, networks = _parse_allowed_clients(
+        [
+            "127.0.0.1",
+            "::1",
+            "localhost",
+            "testclient",
+            "172.66.0.0/16",
+            "",  # blank entries are ignored
+            "garbage!",
+        ]
+    )
+    assert literals == {"localhost", "testclient", "garbage!"}
+    assert len(networks) == 3
+    rendered = sorted(str(n) for n in networks)
+    assert rendered == ["127.0.0.1/32", "172.66.0.0/16", "::1/128"]
+
+
+def test_client_ip_allowed_matches_cidr_and_literal() -> None:
+    """The allowed-check honours both literal exact matches (for
+    ``testclient``/``localhost`` sentinels) and CIDR membership (for
+    Docker NAT ranges like 172.66.0.0/16).
+    """
+    from mcp_proxy.server import _client_ip_allowed, _parse_allowed_clients
+
+    literals, networks = _parse_allowed_clients(
+        ["127.0.0.1", "testclient", "172.66.0.0/16"]
+    )
+    # Literal sentinel match (TestClient's client.host value).
+    assert _client_ip_allowed("testclient", literals, networks) is True
+    # Loopback IP literal → /32 network match.
+    assert _client_ip_allowed("127.0.0.1", literals, networks) is True
+    # Docker Desktop NAT IP inside the /16 range.
+    assert _client_ip_allowed("172.66.0.243", literals, networks) is True
+    # Outside the range → rejected.
+    assert _client_ip_allowed("172.67.0.1", literals, networks) is False
+    # Unparseable sentinel not in literals → rejected.
+    assert _client_ip_allowed("unknown", literals, networks) is False
+
+
+def test_onboarding_cidr_override_admits_range(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test for the Docker Desktop for Mac failure mode:
+    the port-forwarded TCP peer lives in a 172.66.x.x NAT subnet that
+    the operator cannot enumerate by exact IP (Docker Desktop can pick
+    different addresses across reboots). Setting
+    ``MCPY_ONBOARDING_ALLOWED_CLIENTS`` to a CIDR like ``172.66.0.0/16``
+    must admit every address in that block. Before CIDR support, the
+    parser did exact string matching only and the env var was useless
+    for anything but pinned single IPs.
+    """
+    from unittest.mock import patch
+
+    monkeypatch.setenv(
+        "MCPY_ONBOARDING_ALLOWED_CLIENTS",
+        "127.0.0.1,::1,172.66.0.0/16",
+    )
+    app, store = _build_app(tmp_path)
+
+    with patch("mcp_proxy.server._client_ip", return_value="172.66.0.243"):
+        with TestClient(app) as client:
+            r = client.post(
+                "/admin/api/onboarding/set_admin_token",
+                json={"token": "a-very-long-and-random-token-value"},
+            )
+            assert r.status_code == 200, r.text
+    store.close()
+
+
 def test_onboarding_expired_returns_410(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
