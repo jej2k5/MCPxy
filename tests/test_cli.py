@@ -75,4 +75,11 @@ def test_main_serve_wires_settings(monkeypatch: pytest.MonkeyPatch) -> None:
         "timeout_keep_alive": 9,
         "backlog": 444,
         "reload": True,
+        # Uvicorn's default Proxy-Headers middleware trusts
+        # ``X-Forwarded-For`` from any 127.0.0.1 peer, which silently
+        # lets clients spoof their IP for admin allowlist, onboarding
+        # allowlist, and rate-limit attribution purposes. MCPy must
+        # opt out so ``request.client.host`` always reflects the real
+        # TCP peer.
+        "proxy_headers": False,
     }
