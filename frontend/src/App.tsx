@@ -4,6 +4,7 @@ import Sidebar from "./components/Sidebar";
 import LoginGate from "./components/LoginGate";
 import Overview from "./pages/Overview";
 import RoutesPage from "./pages/Routes";
+import Graph from "./pages/Graph";
 import Traffic from "./pages/Traffic";
 import Policies from "./pages/Policies";
 import Connect from "./pages/Connect";
@@ -131,6 +132,7 @@ export default function App() {
             <Route path="/" element={<Navigate to="/overview" replace />} />
             <Route path="/overview" element={<Overview />} />
             <Route path="/routes" element={<RoutesPage />} />
+            <Route path="/graph" element={<Graph />} />
             <Route path="/traffic" element={<Traffic />} />
             <Route path="/policies" element={<Policies />} />
             <Route path="/connect" element={<Connect />} />
