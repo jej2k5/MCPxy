@@ -4,12 +4,22 @@
 # the config file bind-mounted from deploy/docker/config.json and runtime
 # state persisted in the mcpy_data named volume.
 #
+# MCPy serves HTTPS by default using an auto-generated self-signed cert
+# cached under /var/lib/mcpy/tls/ (persisted across restarts by the
+# mcpy_data volume). Clients must pass `-k` (or trust the cert) to
+# connect:
+#
+#     curl -k https://127.0.0.1:8000/health
+#     mcp-proxy install --client claude_desktop --url https://127.0.0.1:8000
+#
+# For a real TLS cert, mount it into the container and add
+# `--ssl-certfile` / `--ssl-keyfile` to the entrypoint command (or set
+# `tls.certfile` / `tls.keyfile` in config.json). To serve plain HTTP
+# instead, append `--no-tls` to the service command.
+#
 # The desktop install helpers (`mcp-proxy install ...`) run on the HOST,
 # not in the container, because they write to host client config files
-# (Claude Desktop, Cursor, Continue, ...). After `docker compose up`, point
-# those installers at the running container with:
-#
-#     mcp-proxy install --client claude_desktop --url http://127.0.0.1:8000
+# (Claude Desktop, Cursor, Continue, ...).
 #
 # Set MCP_PROXY_TOKEN in a .env file (or the shell) to enable bearer auth;
 # leave it empty to run the proxy unauthenticated (dev only).
@@ -34,12 +44,11 @@ services:
       - ./deploy/docker/config.json:/etc/mcpy/config.json:ro
       # Runtime state: file-drop watcher directory, telemetry buffers, etc.
       - mcpy_data:/var/lib/mcpy
-    # If you enable inbound TLS (see the "Serving HTTPS" section of the
-    # README — set `tls.enabled` in config.json and mount cert+key into
-    # the container), change the healthcheck URL to `https://127.0.0.1:8000/health`
-    # and add `-k` so curl accepts the self-signed/internal cert.
+    # HTTPS by default; -k accepts the auto-generated self-signed cert.
+    # If you run the service with `--no-tls`, change this back to
+    # http:// and drop the `-k` flag.
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
+      test: ["CMD", "curl", "-kfsS", "https://127.0.0.1:8000/health"]
       interval: 15s
       timeout: 5s
       retries: 3

@@ -246,50 +246,69 @@ def _resolve_tls_settings(
 ) -> tuple[dict[str, Any], int | None]:
     """Return (uvicorn ssl kwargs, exit_code).
 
-    CLI flags override whatever is in ``state.config.tls``. If either
-    ``--ssl-certfile`` or ``--ssl-keyfile`` is supplied the listener is
-    implicitly enabled. When disabled the returned kwargs dict is empty.
+    Resolution order:
+
+    1. ``--no-tls`` on the CLI — serve plain HTTP, skip cert handling
+       entirely.
+    2. Explicit operator TLS — CLI ``--ssl-*`` flags or a ``tls`` block
+       in the AppConfig (either ``enabled=True`` or just certfile/keyfile
+       set) win and are threaded straight to uvicorn.
+    3. Default — MCPy serves HTTPS out of the box using an
+       auto-generated self-signed cert cached under
+       ``<state_dir>/tls/``. See :func:`mcp_proxy.tls.ensure_dev_cert`.
+
     On a validation error (one of cert/key missing, or a file that
     doesn't exist on disk) an error is printed to stderr and a non-None
     exit code is returned so ``cmd_serve`` can bail out before binding
     the socket — this gives operators a clean message instead of
     uvicorn's stack trace.
     """
+    if getattr(args, "no_tls", False):
+        return {}, None
+
     base = state.config.tls
-    certfile = args.ssl_certfile if args.ssl_certfile is not None else base.certfile
-    keyfile = args.ssl_keyfile if args.ssl_keyfile is not None else base.keyfile
-    keyfile_password = (
-        args.ssl_keyfile_password
-        if args.ssl_keyfile_password is not None
-        else base.keyfile_password
-    )
     cli_tls_present = bool(
         args.ssl_certfile or args.ssl_keyfile or args.ssl_keyfile_password
     )
-    enabled = base.enabled or cli_tls_present
+    config_tls_present = bool(base.enabled or base.certfile or base.keyfile)
 
-    if not enabled:
-        return {}, None
-
-    if not certfile or not keyfile:
-        print(
-            "tls: both --ssl-certfile and --ssl-keyfile are required to enable HTTPS",
-            file=sys.stderr,
+    if cli_tls_present or config_tls_present:
+        certfile = args.ssl_certfile if args.ssl_certfile is not None else base.certfile
+        keyfile = args.ssl_keyfile if args.ssl_keyfile is not None else base.keyfile
+        keyfile_password = (
+            args.ssl_keyfile_password
+            if args.ssl_keyfile_password is not None
+            else base.keyfile_password
         )
-        return {}, 2
-
-    for label, path in (("certfile", certfile), ("keyfile", keyfile)):
-        if not Path(path).is_file():
-            print(f"tls: {label} not found: {path}", file=sys.stderr)
+        if not certfile or not keyfile:
+            print(
+                "tls: both --ssl-certfile and --ssl-keyfile are required to enable HTTPS",
+                file=sys.stderr,
+            )
             return {}, 2
+        for label, path in (("certfile", certfile), ("keyfile", keyfile)):
+            if not Path(path).is_file():
+                print(f"tls: {label} not found: {path}", file=sys.stderr)
+                return {}, 2
+        ssl_kwargs: dict[str, Any] = {
+            "ssl_certfile": certfile,
+            "ssl_keyfile": keyfile,
+        }
+        if keyfile_password:
+            ssl_kwargs["ssl_keyfile_password"] = keyfile_password
+        return ssl_kwargs, None
 
-    ssl_kwargs: dict[str, Any] = {
-        "ssl_certfile": certfile,
-        "ssl_keyfile": keyfile,
-    }
-    if keyfile_password:
-        ssl_kwargs["ssl_keyfile_password"] = keyfile_password
-    return ssl_kwargs, None
+    # Default: auto-generate (or reuse a cached) self-signed dev cert
+    # so first-run HTTPS Just Works. Clients need `-k` to curl it.
+    from mcp_proxy.storage.db import _default_state_dir
+    from mcp_proxy.tls import ensure_dev_cert
+
+    certfile, keyfile = ensure_dev_cert(_default_state_dir())
+    logging.getLogger(__name__).info(
+        "serving HTTPS with auto-generated self-signed cert "
+        "(pass --no-tls for HTTP, or --ssl-certfile/--ssl-keyfile for a real cert)"
+    )
+    return {"ssl_certfile": certfile, "ssl_keyfile": keyfile}, None
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
@@ -714,6 +733,15 @@ def main(argv: list[str] | None = None) -> int:
         "--ssl-keyfile-password",
         default=None,
         help="Password for an encrypted --ssl-keyfile (optional)",
+    )
+    serve.add_argument(
+        "--no-tls",
+        action="store_true",
+        help=(
+            "Serve plain HTTP instead of the default HTTPS. MCPy serves "
+            "HTTPS by default with an auto-generated self-signed cert "
+            "cached under the state directory; pass this flag to opt out."
+        ),
     )
     serve.set_defaults(func=cmd_serve)
 
