@@ -254,6 +254,21 @@ def cmd_serve(args: argparse.Namespace) -> int:
         timeout_keep_alive=args.idle_timeout,
         backlog=args.max_queue,
         reload=args.reload,
+        # Uvicorn's Proxy-Headers middleware defaults to trusting
+        # ``X-Forwarded-For`` / ``X-Forwarded-Proto`` whenever the
+        # immediate TCP peer is on its default allow-list (``127.0.0.1``).
+        # On Docker Desktop for Mac the published-port peer is 127.0.0.1
+        # inside the container, so Uvicorn was silently rewriting
+        # ``request.client.host`` from any ``X-Forwarded-For`` header a
+        # client cared to send — including fake ones from browser
+        # extensions or upstream privacy proxies — and that spoofed IP
+        # propagated into ``admin.allowed_clients``, the onboarding
+        # loopback allowlist, policy rate-limit attribution, and the
+        # traffic recorder. Zero code in MCPy reads forwarded headers
+        # today, so disabling the middleware costs nothing and removes
+        # the footgun. Proper trusted-proxy support (opt-in via
+        # ``AdminConfig.trusted_proxies``) is tracked as a follow-up.
+        proxy_headers=False,
     )
     return 0
 
