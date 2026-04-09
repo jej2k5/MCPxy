@@ -74,6 +74,9 @@ def test_main_serve_wires_settings(monkeypatch: pytest.MonkeyPatch) -> None:
             "--max-queue",
             "444",
             "--reload",
+            # Auto-generated TLS is the default; pass --no-tls so this
+            # baseline test stays focused on the non-TLS kwargs wiring.
+            "--no-tls",
         ],
     )
 
@@ -261,13 +264,115 @@ def test_main_serve_config_tls_used_when_no_cli_flags(
     assert kwargs["ssl_keyfile_password"] == "pw-from-config"
 
 
-def test_main_serve_no_tls_omits_ssl_kwargs(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_serve_no_tls_flag_disables_https(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--no-tls`` short-circuits the default auto-gen path and serves
+    plain HTTP, matching the pre-default-TLS behavior for operators who
+    terminate TLS upstream (reverse proxy, service mesh, etc.).
+    """
     called: dict[str, Any] = {}
     _install_serve_stubs(monkeypatch, state=_state_with_tls(), called=called)
-    monkeypatch.setattr(sys, "argv", ["mcp-proxy", "serve"])
+
+    # The auto-gen helper must never be called when --no-tls is set.
+    def _should_not_run(state_dir: Any) -> tuple[str, str]:
+        raise AssertionError("ensure_dev_cert should not run under --no-tls")
+
+    monkeypatch.setattr("mcp_proxy.tls.ensure_dev_cert", _should_not_run)
+    monkeypatch.setattr(sys, "argv", ["mcp-proxy", "serve", "--no-tls"])
 
     assert cli.main() == 0
     kwargs = called["uvicorn"]
     assert "ssl_certfile" not in kwargs
     assert "ssl_keyfile" not in kwargs
     assert "ssl_keyfile_password" not in kwargs
+
+
+def test_main_serve_auto_generates_tls_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With no TLS flags and no config tls block, MCPy auto-generates a
+    self-signed cert and serves HTTPS. This is the default first-run
+    experience.
+    """
+    called: dict[str, Any] = {}
+    _install_serve_stubs(monkeypatch, state=_state_with_tls(), called=called)
+
+    ensure_calls: list[Any] = []
+
+    def fake_ensure_dev_cert(state_dir: Any) -> tuple[str, str]:
+        ensure_calls.append(state_dir)
+        return "/auto/cert.pem", "/auto/key.pem"
+
+    monkeypatch.setattr("mcp_proxy.tls.ensure_dev_cert", fake_ensure_dev_cert)
+    monkeypatch.setattr(sys, "argv", ["mcp-proxy", "serve"])
+
+    assert cli.main() == 0
+    assert len(ensure_calls) == 1
+    kwargs = called["uvicorn"]
+    assert kwargs["ssl_certfile"] == "/auto/cert.pem"
+    assert kwargs["ssl_keyfile"] == "/auto/key.pem"
+    assert "ssl_keyfile_password" not in kwargs
+
+
+def test_main_serve_explicit_ssl_flags_skip_auto_gen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit ``--ssl-certfile`` / ``--ssl-keyfile`` must skip the
+    auto-gen path entirely — operators providing real certs shouldn't
+    end up with a stray self-signed cert cached on disk.
+    """
+    called: dict[str, Any] = {}
+    _install_serve_stubs(monkeypatch, state=_state_with_tls(), called=called)
+    monkeypatch.setattr(cli.Path, "is_file", lambda self: True)
+
+    def _should_not_run(state_dir: Any) -> tuple[str, str]:
+        raise AssertionError("ensure_dev_cert should not run when --ssl-* flags are set")
+
+    monkeypatch.setattr("mcp_proxy.tls.ensure_dev_cert", _should_not_run)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "mcp-proxy",
+            "serve",
+            "--ssl-certfile",
+            "/real/cert.pem",
+            "--ssl-keyfile",
+            "/real/key.pem",
+        ],
+    )
+
+    assert cli.main() == 0
+    kwargs = called["uvicorn"]
+    assert kwargs["ssl_certfile"] == "/real/cert.pem"
+    assert kwargs["ssl_keyfile"] == "/real/key.pem"
+
+
+def test_main_serve_config_tls_skips_auto_gen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``tls`` block in AppConfig is operator intent; the auto-gen path
+    must not run even when ``enabled=False`` (because staged certfile /
+    keyfile values signal the operator is managing TLS themselves).
+    """
+    called: dict[str, Any] = {}
+    state = _state_with_tls(
+        TlsConfig(
+            enabled=True,
+            certfile="/from/config/cert.pem",
+            keyfile="/from/config/key.pem",
+        )
+    )
+    _install_serve_stubs(monkeypatch, state=state, called=called)
+    monkeypatch.setattr(cli.Path, "is_file", lambda self: True)
+
+    def _should_not_run(state_dir: Any) -> tuple[str, str]:
+        raise AssertionError("ensure_dev_cert should not run when tls is configured")
+
+    monkeypatch.setattr("mcp_proxy.tls.ensure_dev_cert", _should_not_run)
+    monkeypatch.setattr(sys, "argv", ["mcp-proxy", "serve"])
+
+    assert cli.main() == 0
+    kwargs = called["uvicorn"]
+    assert kwargs["ssl_certfile"] == "/from/config/cert.pem"

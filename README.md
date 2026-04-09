@@ -131,8 +131,20 @@ entry points, and architecture diagrams.
 
 ## Serving HTTPS
 
-MCPy can terminate TLS itself instead of sitting behind a reverse
-proxy. Point it at a cert/key pair, either from the command line:
+**MCPy serves HTTPS by default.** On first run, `mcp-proxy serve`
+auto-generates a self-signed certificate for `localhost`, `127.0.0.1`,
+and `::1` and caches it under `<state-dir>/tls/cert.pem` +
+`<state-dir>/tls/key.pem` (default state dir: `~/.mcpy`). Subsequent
+runs reuse the same cert. Clients need to pass `-k` to curl, or trust
+the cert via their OS keychain, until you swap in a real one.
+
+```bash
+mcp-proxy serve                              # HTTPS with auto-gen cert
+curl -k https://127.0.0.1:8000/health
+```
+
+For production, point MCPy at a real cert/key pair from the command
+line:
 
 ```bash
 mcp-proxy serve --listen 0.0.0.0:8443 \
@@ -155,13 +167,31 @@ in cleartext:
 }
 ```
 
-CLI flags override the config values, so you can promote a dev machine
-to HTTPS without touching the stored config. TLS settings are **not
-hot-reloadable** — the listener's SSL context is bound at startup, so
-the atomic-apply pipeline rejects any config change that alters the
-`tls` block with a clear "restart required" error. For production
-deployments that need certificate auto-rotation (Let's Encrypt, etc.),
-fronting MCPy with nginx / Caddy / Traefik is still the simplest path.
+CLI flags override the config values, and an explicit `tls` block in
+the config overrides the auto-gen default, so you never end up with a
+stray self-signed cert when you've set real ones.
+
+To opt out of TLS entirely — e.g. behind a reverse proxy that
+terminates TLS upstream — pass `--no-tls`:
+
+```bash
+mcp-proxy serve --no-tls
+```
+
+> **Note on MCP clients and self-signed certs.** Client applications
+> (Claude Desktop, Cursor, Continue, ...) won't trust the auto-generated
+> cert out of the box. `mcp-proxy install --client ... --url ...` still
+> defaults to `http://127.0.0.1:8000`; point it at your HTTPS URL
+> explicitly (`--url https://127.0.0.1:8000`) and either trust the cert
+> in the client's OS keychain or pass `--no-tls` to MCPy if you'd
+> rather keep the loopback plaintext.
+
+TLS settings are **not hot-reloadable** — the listener's SSL context is
+bound at startup, so the atomic-apply pipeline rejects any config
+change that alters the `tls` block with a clear "restart required"
+error. For production deployments that need certificate auto-rotation
+(Let's Encrypt, etc.), fronting MCPy with nginx / Caddy / Traefik is
+still the simplest path.
 
 ## CLI reference
 
