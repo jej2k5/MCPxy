@@ -100,6 +100,37 @@ class TelemetryConfig(BaseModel):
     drop_policy: Literal["drop_oldest", "drop_newest"] = "drop_newest"
 
 
+class TlsConfig(BaseModel):
+    """Inbound TLS settings for the `mcpy serve` HTTP listener.
+
+    When ``enabled`` is true the CLI threads ``certfile`` / ``keyfile`` /
+    ``keyfile_password`` through to uvicorn's ``ssl_*`` parameters so the
+    proxy terminates HTTPS itself instead of relying on an upstream
+    reverse proxy. ``keyfile_password`` flows through the normal
+    ``${env:NAME}`` / ``${secret:NAME}`` expansion pipeline so the
+    password never has to sit in the config file in cleartext.
+
+    Hot-reload is not supported — the uvicorn socket was already bound
+    (with or without an SSL context) at startup, so
+    :meth:`RuntimeConfigApplier.apply` rejects any candidate whose
+    ``tls`` block differs from the running config and returns a clear
+    "restart required" error.
+    """
+
+    enabled: bool = False
+    certfile: str | None = None
+    keyfile: str | None = None
+    keyfile_password: str | None = None
+
+    @model_validator(mode="after")
+    def _validate(self) -> "TlsConfig":
+        if self.enabled and not (self.certfile and self.keyfile):
+            raise ValueError("tls.enabled requires certfile and keyfile")
+        if self.keyfile_password and not self.keyfile:
+            raise ValueError("tls.keyfile_password requires keyfile")
+        return self
+
+
 class MethodPolicy(BaseModel):
     """JSON-RPC method allow/deny lists with wildcard support."""
 
@@ -274,6 +305,7 @@ class AppConfig(BaseModel):
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     upstreams: dict[str, UpstreamConfig] = Field(default_factory=dict)
     policies: PoliciesConfig = Field(default_factory=PoliciesConfig)
+    tls: TlsConfig = Field(default_factory=TlsConfig)
 
     @model_validator(mode="after")
     def _validate_default_upstream(self) -> "AppConfig":
@@ -418,6 +450,9 @@ def redact_secrets(payload: dict[str, Any]) -> dict[str, Any]:
             auth_block["token"] = "***REDACTED***"
         if auth_block.get("token_env"):
             auth_block["token_env"] = "***REDACTED_ENV***"
+    tls_block = redacted.get("tls") or {}
+    if isinstance(tls_block, dict) and tls_block.get("keyfile_password"):
+        tls_block["keyfile_password"] = "***REDACTED***"
     upstreams = redacted.get("upstreams") or {}
     if isinstance(upstreams, dict):
         for _name, settings in upstreams.items():

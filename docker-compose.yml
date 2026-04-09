@@ -34,6 +34,10 @@ services:
       - ./deploy/docker/config.json:/etc/mcpy/config.json:ro
       # Runtime state: file-drop watcher directory, telemetry buffers, etc.
       - mcpy_data:/var/lib/mcpy
+    # If you enable inbound TLS (see the "Serving HTTPS" section of the
+    # README — set `tls.enabled` in config.json and mount cert+key into
+    # the container), change the healthcheck URL to `https://127.0.0.1:8000/health`
+    # and add `-k` so curl accepts the self-signed/internal cert.
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/health"]
       interval: 15s

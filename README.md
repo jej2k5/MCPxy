@@ -129,6 +129,40 @@ See [`docs/Design.md`](docs/Design.md) for the full schema, including
 the policy engine, telemetry sinks, admin MCP method reference, plugin
 entry points, and architecture diagrams.
 
+## Serving HTTPS
+
+MCPy can terminate TLS itself instead of sitting behind a reverse
+proxy. Point it at a cert/key pair, either from the command line:
+
+```bash
+mcp-proxy serve --listen 0.0.0.0:8443 \
+    --ssl-certfile /etc/mcpy/cert.pem \
+    --ssl-keyfile /etc/mcpy/key.pem
+```
+
+…or from the config file, where the keyfile password can flow through
+the normal `${env:NAME}` / `${secret:NAME}` expansion so it never sits
+in cleartext:
+
+```json
+{
+  "tls": {
+    "enabled": true,
+    "certfile": "/etc/mcpy/cert.pem",
+    "keyfile": "/etc/mcpy/key.pem",
+    "keyfile_password": "${secret:TLS_KEY_PW}"
+  }
+}
+```
+
+CLI flags override the config values, so you can promote a dev machine
+to HTTPS without touching the stored config. TLS settings are **not
+hot-reloadable** — the listener's SSL context is bound at startup, so
+the atomic-apply pipeline rejects any config change that alters the
+`tls` block with a clear "restart required" error. For production
+deployments that need certificate auto-rotation (Let's Encrypt, etc.),
+fronting MCPy with nginx / Caddy / Traefik is still the simplest path.
+
 ## CLI reference
 
 ```
