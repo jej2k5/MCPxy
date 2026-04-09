@@ -27,6 +27,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,13 @@ from mcp_proxy.runtime import RuntimeConfigManager
 logger = logging.getLogger(__name__)
 
 DEFAULT_DROP_DIR = Path.home() / ".mcpy" / "upstreams.d"
+
+# Mirrors the SecretsManager naming rule + the frontend ``AddManuallyDialog``
+# regex. Upstream names appear in URL paths (``/mcp/{name}``), header values
+# (``X-Mcp-Upstream``), and JSON keys, so we restrict them to a safe character
+# set rather than letting arbitrary strings through.
+UPSTREAM_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_\-]*$")
+_MAX_UPSTREAM_NAME_LENGTH = 128
 
 
 class RegistrationError(ValueError):
@@ -62,6 +70,14 @@ class RegistrationService:
     ) -> dict[str, Any]:
         if not name or not isinstance(name, str):
             raise RegistrationError("upstream name must be a non-empty string")
+        if len(name) > _MAX_UPSTREAM_NAME_LENGTH:
+            raise RegistrationError(
+                f"upstream name exceeds {_MAX_UPSTREAM_NAME_LENGTH} characters"
+            )
+        if not UPSTREAM_NAME_RE.match(name):
+            raise RegistrationError(
+                f"upstream name {name!r} must match [A-Za-z0-9_][A-Za-z0-9_-]*"
+            )
         if not isinstance(definition, dict):
             raise RegistrationError("upstream definition must be an object")
         if "type" not in definition:

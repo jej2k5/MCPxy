@@ -162,3 +162,56 @@ export interface OnboardingSetTokenResponse {
   onboarding: OnboardingStatus;
 }
 
+// ---------------------------------------------------------------------------
+// Manual upstream registration (form on Browse page → POST /admin/api/upstreams)
+// ---------------------------------------------------------------------------
+
+export type StdioUpstreamPayload = {
+  type: "stdio";
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+  queue_size?: number;
+};
+
+export type HttpUpstreamPayload = {
+  type: "http";
+  url: string;
+  timeout_s?: number;
+  headers?: Record<string, string>;
+  auth?: HttpAuthPayload | null;
+};
+
+export type HttpAuthPayload =
+  | { type: "none" }
+  | { type: "bearer"; token: string }
+  | { type: "api_key"; header: string; value: string }
+  | { type: "basic"; username: string; password: string }
+  | {
+      type: "oauth2";
+      issuer?: string | null;
+      authorization_endpoint?: string | null;
+      token_endpoint?: string | null;
+      registration_endpoint?: string | null;
+      client_id?: string | null;
+      client_secret?: string | null;
+      scopes?: string[];
+      audience?: string | null;
+      redirect_uri?: string | null;
+      dynamic_registration?: boolean;
+    };
+
+export type ManualUpstreamConfig = StdioUpstreamPayload | HttpUpstreamPayload;
+
+export interface ManualUpstreamRequest {
+  name: string;
+  config: ManualUpstreamConfig;
+  replace: boolean;
+}
+
+export interface ManualUpstreamResponse {
+  applied: boolean;
+  diff?: Record<string, unknown>;
+  error?: string;
+}
+

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
+import { Plus } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
 import type { CatalogEntry, CatalogResponse } from "../api/types";
+import AddManuallyDialog from "../components/AddManuallyDialog";
 
 export default function Browse() {
   const [catalog, setCatalog] = useState<CatalogResponse | null>(null);
@@ -8,6 +10,8 @@ export default function Browse() {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<string>("");
   const [selected, setSelected] = useState<CatalogEntry | null>(null);
+  const [manualOpen, setManualOpen] = useState<boolean>(false);
+  const [manualToast, setManualToast] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -74,7 +78,21 @@ export default function Browse() {
         <span className="text-xs text-slate-500">
           {filtered.length} / {catalog.entries.length} servers
         </span>
+        <button
+          type="button"
+          className="btn"
+          onClick={() => setManualOpen(true)}
+        >
+          <Plus className="h-4 w-4" />
+          Add manually
+        </button>
       </div>
+
+      {manualToast && (
+        <div className="rounded-lg border border-ok/40 bg-ok/10 px-3 py-2 text-sm text-ok">
+          {manualToast}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
         {filtered.map((entry) => (
@@ -90,6 +108,18 @@ export default function Browse() {
         <InstallDialog
           entry={selected}
           onClose={() => setSelected(null)}
+        />
+      )}
+
+      {manualOpen && (
+        <AddManuallyDialog
+          onClose={() => setManualOpen(false)}
+          onInstalled={(name) => {
+            setManualToast(`Registered upstream '${name}'.`);
+            setManualOpen(false);
+            // Auto-clear the toast after a few seconds.
+            setTimeout(() => setManualToast(null), 4000);
+          }}
         />
       )}
     </div>
