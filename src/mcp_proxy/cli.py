@@ -241,11 +241,73 @@ def _expand_for_bootstrap(
 # ---------------------------------------------------------------------------
 
 
+def _resolve_tls_settings(
+    args: argparse.Namespace, state: AppState
+) -> tuple[dict[str, Any], int | None]:
+    """Return (uvicorn ssl kwargs, exit_code).
+
+    CLI flags override whatever is in ``state.config.tls``. If either
+    ``--ssl-certfile`` or ``--ssl-keyfile`` is supplied the listener is
+    implicitly enabled. When disabled the returned kwargs dict is empty.
+    On a validation error (one of cert/key missing, or a file that
+    doesn't exist on disk) an error is printed to stderr and a non-None
+    exit code is returned so ``cmd_serve`` can bail out before binding
+    the socket — this gives operators a clean message instead of
+    uvicorn's stack trace.
+    """
+    base = state.config.tls
+    certfile = args.ssl_certfile if args.ssl_certfile is not None else base.certfile
+    keyfile = args.ssl_keyfile if args.ssl_keyfile is not None else base.keyfile
+    keyfile_password = (
+        args.ssl_keyfile_password
+        if args.ssl_keyfile_password is not None
+        else base.keyfile_password
+    )
+    cli_tls_present = bool(
+        args.ssl_certfile or args.ssl_keyfile or args.ssl_keyfile_password
+    )
+    enabled = base.enabled or cli_tls_present
+
+    if not enabled:
+        return {}, None
+
+    if not certfile or not keyfile:
+        print(
+            "tls: both --ssl-certfile and --ssl-keyfile are required to enable HTTPS",
+            file=sys.stderr,
+        )
+        return {}, 2
+
+    for label, path in (("certfile", certfile), ("keyfile", keyfile)):
+        if not Path(path).is_file():
+            print(f"tls: {label} not found: {path}", file=sys.stderr)
+            return {}, 2
+
+    ssl_kwargs: dict[str, Any] = {
+        "ssl_certfile": certfile,
+        "ssl_keyfile": keyfile,
+    }
+    if keyfile_password:
+        ssl_kwargs["ssl_keyfile_password"] = keyfile_password
+    return ssl_kwargs, None
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     logging.getLogger().setLevel(args.log_level.upper())
     state = build_state(args.config)
     app = create_app(state, health_path=args.health_path, request_timeout_s=args.request_timeout)
     host, port = args.listen
+
+    ssl_kwargs, ssl_exit = _resolve_tls_settings(args, state)
+    if ssl_exit is not None:
+        return ssl_exit
+    if ssl_kwargs and host == "127.0.0.1":
+        logging.getLogger(__name__).warning(
+            "TLS enabled on loopback-only; set --listen 0.0.0.0:%d to accept "
+            "external connections",
+            port,
+        )
+
     uvicorn.run(
         app,
         host=host,
@@ -269,6 +331,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         # the footgun. Proper trusted-proxy support (opt-in via
         # ``AdminConfig.trusted_proxies``) is tracked as a follow-up.
         proxy_headers=False,
+        **ssl_kwargs,
     )
     return 0
 
@@ -637,6 +700,21 @@ def main(argv: list[str] | None = None) -> int:
     serve.add_argument("--idle-timeout", type=int, default=5)
     serve.add_argument("--max-queue", type=int, default=2048)
     serve.add_argument("--reload", action="store_true")
+    serve.add_argument(
+        "--ssl-certfile",
+        default=None,
+        help="Path to the TLS certificate (PEM). Enables HTTPS when set.",
+    )
+    serve.add_argument(
+        "--ssl-keyfile",
+        default=None,
+        help="Path to the TLS private key (PEM). Enables HTTPS when set.",
+    )
+    serve.add_argument(
+        "--ssl-keyfile-password",
+        default=None,
+        help="Password for an encrypted --ssl-keyfile (optional)",
+    )
     serve.set_defaults(func=cmd_serve)
 
     init = subparsers.add_parser("init", help="Generate a starter MCPy config file")

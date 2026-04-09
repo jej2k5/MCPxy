@@ -135,6 +135,16 @@ class RuntimeConfigManager:
 
         expanded = _apply_expansions(deepcopy(candidate), secrets=self.secrets_resolver)
         next_config = AppConfig.model_validate(expanded)
+        # TLS settings fundamentally cannot hot-reload: the uvicorn socket
+        # was already created with (or without) an SSL context at startup.
+        # Reject changes instead of silently ignoring them so operators get
+        # a clear signal to restart.
+        if self.config.tls != next_config.tls:
+            return {
+                "applied": False,
+                "error": "tls config changes require a server restart",
+                "rolled_back": True,
+            }
         diff = self._compute_diff(self.config, next_config)
         if dry_run:
             return {"applied": False, "dry_run": True, "rolled_back": False, "diff": diff}
@@ -211,6 +221,7 @@ class RuntimeConfigManager:
         return {
             "default_upstream_changed": current.default_upstream != nxt.default_upstream,
             "telemetry_changed": current.telemetry != nxt.telemetry,
+            "tls_changed": current.tls != nxt.tls,
             "upstreams": {
                 "added": sorted([k for k in next_up if k not in current_up]),
                 "removed": sorted([k for k in current_up if k not in next_up]),

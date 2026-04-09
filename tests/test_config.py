@@ -3,7 +3,14 @@ import json
 
 import pytest
 
-from mcp_proxy.config import AppConfig, load_config, validate_config_payload
+from mcp_proxy.config import (
+    AppConfig,
+    TlsConfig,
+    _apply_expansions,
+    load_config,
+    redact_secrets,
+    validate_config_payload,
+)
 from mcp_proxy.proxy.admin import AdminService
 from mcp_proxy.proxy.manager import PluginRegistry, UpstreamManager
 from mcp_proxy.runtime import RuntimeConfigManager
@@ -183,3 +190,114 @@ def test_telemetry_config_rejects_invalid_spec_fields() -> None:
 def test_admin_mount_name_default() -> None:
     cfg = AppConfig.model_validate({"upstreams": {}})
     assert cfg.admin.mount_name == "__admin__"
+
+
+def test_tls_config_defaults_to_disabled() -> None:
+    cfg = AppConfig.model_validate({"upstreams": {}})
+    assert cfg.tls.enabled is False
+    assert cfg.tls.certfile is None
+    assert cfg.tls.keyfile is None
+    assert cfg.tls.keyfile_password is None
+
+
+def test_tls_config_loads_and_validates() -> None:
+    cfg = AppConfig.model_validate(
+        {
+            "tls": {
+                "enabled": True,
+                "certfile": "/etc/mcpy/cert.pem",
+                "keyfile": "/etc/mcpy/key.pem",
+            },
+            "upstreams": {},
+        }
+    )
+    assert cfg.tls.enabled is True
+    assert cfg.tls.certfile == "/etc/mcpy/cert.pem"
+    assert cfg.tls.keyfile == "/etc/mcpy/key.pem"
+
+
+def test_tls_config_allows_staged_values_when_disabled() -> None:
+    # Operators can land certfile/keyfile in config and flip `enabled`
+    # separately, e.g. via a follow-up admin PATCH.
+    cfg = AppConfig.model_validate(
+        {
+            "tls": {
+                "enabled": False,
+                "certfile": "/etc/mcpy/cert.pem",
+                "keyfile": "/etc/mcpy/key.pem",
+            },
+            "upstreams": {},
+        }
+    )
+    assert cfg.tls.enabled is False
+    assert cfg.tls.certfile == "/etc/mcpy/cert.pem"
+
+
+def test_tls_config_enabled_requires_certfile_and_keyfile() -> None:
+    with pytest.raises(Exception) as exc_info:
+        TlsConfig.model_validate({"enabled": True, "certfile": "/a"})
+    assert "certfile and keyfile" in str(exc_info.value)
+
+
+def test_tls_config_password_requires_keyfile() -> None:
+    with pytest.raises(Exception) as exc_info:
+        TlsConfig.model_validate({"keyfile_password": "hunter2"})
+    assert "keyfile" in str(exc_info.value)
+
+
+def test_tls_config_keyfile_password_env_expansion(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("TLS_PW", "s3cret")
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "tls": {
+                    "enabled": True,
+                    "certfile": "/etc/mcpy/cert.pem",
+                    "keyfile": "/etc/mcpy/key.pem",
+                    "keyfile_password": "${env:TLS_PW}",
+                },
+                "upstreams": {},
+            }
+        )
+    )
+    cfg = load_config(config_path)
+    assert cfg.tls.keyfile_password == "s3cret"
+
+
+def test_tls_config_keyfile_password_secret_expansion() -> None:
+    payload = {
+        "tls": {
+            "enabled": True,
+            "certfile": "/etc/mcpy/cert.pem",
+            "keyfile": "/etc/mcpy/key.pem",
+            "keyfile_password": "${secret:TLS_PW}",
+        },
+        "upstreams": {},
+    }
+
+    def resolver(name: str) -> str | None:
+        return "stub-password" if name == "TLS_PW" else None
+
+    expanded = _apply_expansions(payload, secrets=resolver)
+    cfg = AppConfig.model_validate(expanded)
+    assert cfg.tls.keyfile_password == "stub-password"
+
+
+def test_redact_secrets_redacts_tls_keyfile_password() -> None:
+    payload = {
+        "tls": {
+            "enabled": True,
+            "certfile": "/etc/mcpy/cert.pem",
+            "keyfile": "/etc/mcpy/key.pem",
+            "keyfile_password": "hunter2",
+        },
+        "upstreams": {},
+    }
+    redacted = redact_secrets(payload)
+    assert redacted["tls"]["keyfile_password"] == "***REDACTED***"
+    # Non-secret tls fields stay visible.
+    assert redacted["tls"]["certfile"] == "/etc/mcpy/cert.pem"
+    assert redacted["tls"]["enabled"] is True
+    # The original payload is not mutated.
+    assert payload["tls"]["keyfile_password"] == "hunter2"
