@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -13,8 +13,12 @@ from mcp_proxy.config import (
     HttpUpstreamConfig,
     HttpUpstreamTlsConfig,
     OAuth2AuthConfig,
+    TokenTransformConfig,
 )
 from mcp_proxy.proxy.base import UpstreamTransport
+
+if TYPE_CHECKING:
+    from mcp_proxy.proxy.bridge import RequestContext
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +60,9 @@ class HttpUpstreamTransport(UpstreamTransport):
         raw_auth = settings.get("auth")
         self.auth_config = self._coerce_auth(raw_auth)
         self.tls_config = self._coerce_tls(settings.get("tls"))
+        self.token_transform = self._coerce_token_transform(settings.get("token_transform"))
         self._oauth_manager = settings.get("_oauth_manager")
+        self._config_store = settings.get("_config_store")
         self._auth_strategy = None  # lazily bound in start()
         self._client: httpx.AsyncClient | None = None
 
@@ -77,6 +83,14 @@ class HttpUpstreamTransport(UpstreamTransport):
         from mcp_proxy.config import HttpAuthConfig
 
         return TypeAdapter(HttpAuthConfig).validate_python(raw)
+
+    @staticmethod
+    def _coerce_token_transform(raw: Any) -> TokenTransformConfig | None:
+        if raw is None:
+            return None
+        if isinstance(raw, TokenTransformConfig):
+            return raw
+        return TokenTransformConfig.model_validate(raw)
 
     @staticmethod
     def _coerce_tls(raw: Any) -> HttpUpstreamTlsConfig | None:
@@ -195,21 +209,93 @@ class HttpUpstreamTransport(UpstreamTransport):
         await self.start()
 
     # ------------------------------------------------------------------
+    # Token transformation
+    # ------------------------------------------------------------------
+
+    def _resolve_transform_headers(
+        self, context: "RequestContext | None"
+    ) -> dict[str, str] | None:
+        """Compute per-request header overrides based on the token transform policy.
+
+        Returns ``None`` when no transformation is needed (strategy is
+        ``static`` or unconfigured), an empty dict on deny, or a dict
+        of headers to merge on success.
+        """
+        tt = self.token_transform
+        if tt is None or tt.strategy == "static":
+            return None
+
+        if tt.strategy == "passthrough":
+            if context and context.incoming_bearer:
+                return {"Authorization": f"Bearer {context.incoming_bearer}"}
+            return None
+
+        if tt.strategy == "header_inject":
+            if context and context.email:
+                return {tt.inject_header: context.email}
+            return None
+
+        if tt.strategy == "map":
+            if not context or not context.user_id or not self._config_store:
+                if tt.fallback_on_missing_map == "static":
+                    return None
+                return {}  # empty → deny (caller checks)
+            mapping = self._config_store.get_token_mapping(
+                upstream=self.name, user_id=context.user_id,
+            )
+            if mapping is not None:
+                return {"Authorization": f"Bearer {mapping.upstream_token}"}
+            if tt.fallback_on_missing_map == "static":
+                return None
+            return {}  # deny
+
+        return None
+
+    # ------------------------------------------------------------------
     # Request path
     # ------------------------------------------------------------------
 
-    async def request(self, message: dict[str, Any]) -> dict[str, Any] | None:
+    async def request(
+        self,
+        message: dict[str, Any],
+        context: "RequestContext | None" = None,
+    ) -> dict[str, Any] | None:
         if not self._client:
             raise RuntimeError("http transport not started")
-        resp = await self._client.post(self.url, json=message)
+        extra_headers = self._resolve_transform_headers(context)
+        if extra_headers is not None and len(extra_headers) == 0:
+            # Deny: strategy is "map" and no mapping found
+            from mcp_proxy.jsonrpc import JsonRpcError
+
+            raise JsonRpcError(
+                -32003,
+                "token_mapping_not_found",
+                request_id=message.get("id"),
+            )
+        if extra_headers:
+            resp = await self._client.post(
+                self.url, json=message, headers=extra_headers,
+            )
+        else:
+            resp = await self._client.post(self.url, json=message)
         if not resp.content:
             return None
         return resp.json()
 
-    async def send_notification(self, message: dict[str, Any]) -> None:
+    async def send_notification(
+        self,
+        message: dict[str, Any],
+        context: "RequestContext | None" = None,
+    ) -> None:
         if not self._client:
             raise RuntimeError("http transport not started")
-        await self._client.post(self.url, json=message)
+        extra_headers = self._resolve_transform_headers(context)
+        if extra_headers is not None and len(extra_headers) == 0:
+            return  # silently drop notification for unmapped user
+        if extra_headers:
+            await self._client.post(self.url, json=message, headers=extra_headers)
+        else:
+            await self._client.post(self.url, json=message)
 
     def health(self) -> dict[str, Any]:
         auth_type = "none"
@@ -221,10 +307,14 @@ class HttpUpstreamTransport(UpstreamTransport):
                 "verify": self.tls_config.verify,
                 "mtls": bool(self.tls_config.client_cert),
             }
+        token_transform_strategy = None
+        if self.token_transform is not None:
+            token_transform_strategy = self.token_transform.strategy
         return {
             "type": "http",
             "url": self.url,
             "started": self._client is not None,
             "auth": auth_type,
             "tls": tls_state,
+            "token_transform": token_transform_strategy,
         }

@@ -303,6 +303,16 @@ export interface InviteResponse {
   plaintext_token?: string;
 }
 
+export interface TokenMappingRow {
+  id: number;
+  upstream: string;
+  user_id: number;
+  description: string;
+  created_at: number;
+  updated_at: number;
+  token_preview: string;
+}
+
 export interface PatRow {
   id: number;
   user_id: number;

@@ -61,7 +61,7 @@ from mcp_proxy.observability.discovery import RouteDiscoverer
 from mcp_proxy.observability.traffic import TrafficRecorder
 from mcp_proxy.policy.engine import PolicyEngine
 from mcp_proxy.proxy.admin import AdminService
-from mcp_proxy.proxy.bridge import ProxyBridge
+from mcp_proxy.proxy.bridge import ProxyBridge, RequestContext
 from mcp_proxy.plugins.registry import PluginRegistry
 from mcp_proxy.proxy.manager import UpstreamManager
 from mcp_proxy.routing import resolve_upstream
@@ -527,6 +527,14 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
     async def handle_proxy(request: Request, path_name: str | None, x_mcp_upstream: str | None) -> Response:
         await require_auth_if_needed(request)
         client_ip = _client_ip(request)
+        # Build a RequestContext for token transformation
+        principal: Principal | None = getattr(request.state, "principal", None)
+        req_context = RequestContext(
+            user_id=principal.user_id if principal else None,
+            email=principal.email if principal else None,
+            role=principal.role if principal else None,
+            incoming_bearer=_get_bearer(request),
+        )
         async def iter_response_lines() -> AsyncIterator[bytes]:
             async for msg in parse_messages(request):
                 admin = state.runtime_config.config.admin
@@ -560,6 +568,7 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
                         cleaned,
                         request_bytes=request_bytes,
                         client_ip=client_ip,
+                        context=req_context,
                     )
                     if out is not None:
                         yield (json.dumps(out) + "\n").encode("utf-8")
@@ -1176,6 +1185,48 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
             ok = state.config_store.revoke_pat(pat_id)
         if not ok:
             raise HTTPException(status_code=404, detail="token not found or already revoked")
+        return JSONResponse({"ok": True})
+
+    # ------------------------------------------------------------------
+    # Token mapping endpoints (admin only)
+    # ------------------------------------------------------------------
+
+    @app.get("/admin/api/token-mappings")
+    async def admin_api_token_mappings(request: Request) -> JSONResponse:
+        await require_admin_auth(request)
+        upstream = request.query_params.get("upstream")
+        mappings = state.config_store.list_token_mappings(
+            upstream=upstream or None,
+        )
+        return JSONResponse([m.to_public_dict() for m in mappings])
+
+    @app.post("/admin/api/token-mappings")
+    async def admin_api_token_mappings_create(request: Request) -> JSONResponse:
+        await require_admin_auth(request)
+        body = await request.json()
+        upstream = body.get("upstream")
+        user_id = body.get("user_id")
+        upstream_token = body.get("upstream_token")
+        description = body.get("description", "")
+        if not upstream or user_id is None or not upstream_token:
+            raise HTTPException(
+                status_code=400,
+                detail="upstream, user_id, and upstream_token are required",
+            )
+        record = state.config_store.upsert_token_mapping(
+            upstream=upstream,
+            user_id=int(user_id),
+            upstream_token=upstream_token,
+            description=description,
+        )
+        return JSONResponse(record.to_public_dict(), status_code=201)
+
+    @app.delete("/admin/api/token-mappings/{mapping_id}")
+    async def admin_api_token_mappings_delete(mapping_id: int, request: Request) -> JSONResponse:
+        await require_admin_auth(request)
+        ok = state.config_store.delete_token_mapping(mapping_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="mapping not found")
         return JSONResponse({"ok": True})
 
     # ------------------------------------------------------------------

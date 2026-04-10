@@ -442,6 +442,44 @@ class HttpUpstreamTlsConfig(BaseModel):
         return self
 
 
+class TokenTransformConfig(BaseModel):
+    """Token transformation policy for an HTTP upstream.
+
+    Controls how the proxy maps the client-facing authentication token
+    (the one used to reach the proxy) into the credential sent to the
+    upstream MCP server. Strategies:
+
+    * ``static`` (default) — use the upstream's own ``auth`` config as-is.
+      The client's token is validated for proxy access only and is never
+      forwarded. This is the existing behaviour.
+    * ``passthrough`` — forward the client's incoming ``Authorization``
+      bearer token verbatim to the upstream, replacing whatever the
+      upstream ``auth`` block would have produced.
+    * ``map`` — look up the authenticated user's identity in a per-upstream
+      mapping table and inject the corresponding upstream token. Mappings
+      are managed via ``/admin/api/token-mappings`` and stored encrypted
+      in the secrets table.
+    * ``header_inject`` — keep the upstream's static auth AND inject the
+      client identity as an extra header (``inject_header``). Useful when
+      the upstream wants to know *who* is calling but still requires its
+      own API key.
+    """
+
+    strategy: Literal["static", "passthrough", "map", "header_inject"] = "static"
+    inject_header: str = Field(
+        default="X-MCPy-User",
+        description="Header name for header_inject strategy.",
+    )
+    fallback_on_missing_map: Literal["deny", "static"] = Field(
+        default="deny",
+        description=(
+            "What to do when strategy=map and no mapping exists for the user. "
+            "'deny' rejects with 403; 'static' falls back to the upstream's "
+            "configured auth block."
+        ),
+    )
+
+
 class HttpUpstreamConfig(BaseModel):
     """HTTP upstream configuration."""
 
@@ -451,6 +489,7 @@ class HttpUpstreamConfig(BaseModel):
     auth: HttpAuthConfig | None = Field(default=None, discriminator="type")
     timeout_s: float = 30.0
     tls: HttpUpstreamTlsConfig | None = None
+    token_transform: TokenTransformConfig | None = None
 
 
 UpstreamConfig = StdioUpstreamConfig | HttpUpstreamConfig | dict[str, Any]

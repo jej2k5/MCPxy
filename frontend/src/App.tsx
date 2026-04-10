@@ -14,6 +14,7 @@ import Config from "./pages/Config";
 import Onboarding from "./pages/Onboarding";
 import Users from "./pages/Users";
 import Tokens from "./pages/Tokens";
+import TokenMappings from "./pages/TokenMappings";
 import { apiGet, getToken } from "./api/client";
 import type { MeResponse, OnboardingStatus } from "./api/types";
 
@@ -142,6 +143,7 @@ export default function App() {
             <Route path="/config" element={<Config />} />
             <Route path="/tokens" element={<Tokens />} />
             {isAdmin && <Route path="/users" element={<Users />} />}
+            {isAdmin && <Route path="/token-mappings" element={<TokenMappings />} />}
             <Route path="*" element={<Navigate to="/overview" replace />} />
           </Routes>
         </div>

@@ -196,6 +196,18 @@ personal_access_tokens_table = Table(
     Column("revoked_at", DateTime(timezone=True), nullable=True),
 )
 
+token_mappings_table = Table(
+    "token_mappings",
+    METADATA,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("upstream", String(128), nullable=False),
+    Column("user_id", Integer, nullable=False),
+    Column("upstream_token_ct", LargeBinary, nullable=False),
+    Column("description", Text, nullable=False, server_default=""),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+)
+
 revoked_jwt_ids_table = Table(
     "revoked_jwt_ids",
     METADATA,
@@ -215,6 +227,7 @@ __all__ = [
     "revoked_jwt_ids_table",
     "schema_meta_table",
     "secrets_table",
+    "token_mappings_table",
     "upstreams_table",
     "user_invites_table",
     "users_table",

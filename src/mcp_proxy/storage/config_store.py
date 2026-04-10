@@ -56,6 +56,7 @@ from mcp_proxy.storage.schema import (
     personal_access_tokens_table,
     revoked_jwt_ids_table,
     secrets_table,
+    token_mappings_table,
     upstreams_table,
     user_invites_table,
     users_table,
@@ -283,6 +284,30 @@ class PatRecord:
             "last_used_at": self.last_used_at,
             "expires_at": self.expires_at,
             "revoked_at": self.revoked_at,
+        }
+
+
+@dataclass
+class TokenMappingRecord:
+    """Maps a user to an upstream-specific token (encrypted at rest)."""
+
+    id: int
+    upstream: str
+    user_id: int
+    upstream_token: str  # decrypted plaintext
+    description: str
+    created_at: float
+    updated_at: float
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "upstream": self.upstream,
+            "user_id": self.user_id,
+            "description": self.description,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "token_preview": _preview(self.upstream_token),
         }
 
 
@@ -1170,6 +1195,151 @@ class ConfigStore:
         return jti in self._revoked_jwts
 
     # ------------------------------------------------------------------
+    # Token mappings (per-user upstream token transformation)
+    # ------------------------------------------------------------------
+
+    def upsert_token_mapping(
+        self,
+        *,
+        upstream: str,
+        user_id: int,
+        upstream_token: str,
+        description: str = "",
+    ) -> TokenMappingRecord:
+        """Create or update a mapping from (upstream, user_id) -> upstream_token."""
+        ciphertext = self._fernet.encrypt(upstream_token.encode("utf-8"))
+        with self._lock:
+            with self._engine.begin() as conn:
+                existing = conn.execute(
+                    select(token_mappings_table.c.id).where(
+                        (token_mappings_table.c.upstream == upstream)
+                        & (token_mappings_table.c.user_id == user_id)
+                    )
+                ).first()
+                if existing is not None:
+                    conn.execute(
+                        update(token_mappings_table)
+                        .where(token_mappings_table.c.id == existing[0])
+                        .values(
+                            upstream_token_ct=ciphertext,
+                            description=description,
+                            updated_at=func.now(),
+                        )
+                    )
+                    mapping_id = existing[0]
+                else:
+                    result = conn.execute(
+                        insert(token_mappings_table).values(
+                            upstream=upstream,
+                            user_id=user_id,
+                            upstream_token_ct=ciphertext,
+                            description=description,
+                        )
+                    )
+                    mapping_id = result.inserted_primary_key[0]
+                row = conn.execute(
+                    select(
+                        token_mappings_table.c.id,
+                        token_mappings_table.c.upstream,
+                        token_mappings_table.c.user_id,
+                        token_mappings_table.c.upstream_token_ct,
+                        token_mappings_table.c.description,
+                        token_mappings_table.c.created_at,
+                        token_mappings_table.c.updated_at,
+                    ).where(token_mappings_table.c.id == mapping_id)
+                ).first()
+        assert row is not None
+        return TokenMappingRecord(
+            id=int(row[0]),
+            upstream=str(row[1]),
+            user_id=int(row[2]),
+            upstream_token=self._fernet.decrypt(bytes(row[3])).decode("utf-8"),
+            description=str(row[4]),
+            created_at=_epoch(row[5]) or time.time(),
+            updated_at=_epoch(row[6]) or time.time(),
+        )
+
+    def get_token_mapping(
+        self, *, upstream: str, user_id: int
+    ) -> TokenMappingRecord | None:
+        """Resolve the upstream token for a given (upstream, user_id) pair."""
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                select(
+                    token_mappings_table.c.id,
+                    token_mappings_table.c.upstream,
+                    token_mappings_table.c.user_id,
+                    token_mappings_table.c.upstream_token_ct,
+                    token_mappings_table.c.description,
+                    token_mappings_table.c.created_at,
+                    token_mappings_table.c.updated_at,
+                ).where(
+                    (token_mappings_table.c.upstream == upstream)
+                    & (token_mappings_table.c.user_id == user_id)
+                )
+            ).first()
+        if row is None:
+            return None
+        try:
+            token = self._fernet.decrypt(bytes(row[3])).decode("utf-8")
+        except Exception:
+            return None
+        return TokenMappingRecord(
+            id=int(row[0]),
+            upstream=str(row[1]),
+            user_id=int(row[2]),
+            upstream_token=token,
+            description=str(row[4]),
+            created_at=_epoch(row[5]) or time.time(),
+            updated_at=_epoch(row[6]) or time.time(),
+        )
+
+    def list_token_mappings(
+        self, *, upstream: str | None = None
+    ) -> list[TokenMappingRecord]:
+        stmt = select(
+            token_mappings_table.c.id,
+            token_mappings_table.c.upstream,
+            token_mappings_table.c.user_id,
+            token_mappings_table.c.upstream_token_ct,
+            token_mappings_table.c.description,
+            token_mappings_table.c.created_at,
+            token_mappings_table.c.updated_at,
+        ).order_by(token_mappings_table.c.id)
+        if upstream is not None:
+            stmt = stmt.where(token_mappings_table.c.upstream == upstream)
+        with self._engine.connect() as conn:
+            rows = conn.execute(stmt).all()
+        results: list[TokenMappingRecord] = []
+        for row in rows:
+            try:
+                token = self._fernet.decrypt(bytes(row[3])).decode("utf-8")
+            except Exception:
+                continue
+            results.append(
+                TokenMappingRecord(
+                    id=int(row[0]),
+                    upstream=str(row[1]),
+                    user_id=int(row[2]),
+                    upstream_token=token,
+                    description=str(row[4]),
+                    created_at=_epoch(row[5]) or time.time(),
+                    updated_at=_epoch(row[6]) or time.time(),
+                )
+            )
+        return results
+
+    def delete_token_mapping(self, mapping_id: int) -> bool:
+        with self._lock:
+            with self._engine.begin() as conn:
+                result = conn.execute(
+                    delete(token_mappings_table).where(
+                        token_mappings_table.c.id == mapping_id
+                    )
+                )
+                return result.rowcount > 0
+
+    # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
@@ -1220,6 +1390,7 @@ __all__ = [
     "SecretNotFoundError",
     "SecretRecord",
     "SecretStoreError",
+    "TokenMappingRecord",
     "UpstreamRecord",
     "UserRecord",
     "open_store",
