@@ -1027,20 +1027,51 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
     @app.get("/admin/api/authy/callback")
     async def admin_api_authy_callback(request: Request) -> Response:
         from starlette.responses import RedirectResponse
+
+        _log = logging.getLogger(__name__)
+
+        # Handle OAuth error responses (user denied, provider error, etc.)
+        error = request.query_params.get("error")
+        if error:
+            error_desc = request.query_params.get("error_description", "")
+            _log.warning("authy callback: OAuth error=%s description=%s", error, error_desc)
+            detail = error_desc if error_desc else error
+            raise HTTPException(status_code=400, detail=f"OAuth authorization failed: {detail}")
+
         code = request.query_params.get("code")
         oauth_state = request.query_params.get("state")
         if not code or not oauth_state:
             raise HTTPException(status_code=400, detail="code and state required")
         entry = _oauth_state_store.pop(oauth_state, None)
         if entry is None:
-            raise HTTPException(status_code=400, detail="invalid or expired state")
+            _log.warning(
+                "authy callback: state not found in store (store has %d entries). "
+                "Possible server restart or duplicate callback.",
+                len(_oauth_state_store),
+            )
+            raise HTTPException(
+                status_code=400,
+                detail="invalid or expired state — please restart the login flow",
+            )
         provider, created, code_verifier = entry
         if time.time() - created > 600:
-            raise HTTPException(status_code=400, detail="state expired")
-        result = await state.authn.complete_federated(
-            provider, code, oauth_state, code_verifier=code_verifier
-        )
+            _log.warning("authy callback: state expired (age=%.0fs)", time.time() - created)
+            raise HTTPException(
+                status_code=400,
+                detail="state expired — please restart the login flow",
+            )
+        try:
+            result = await state.authn.complete_federated(
+                provider, code, oauth_state, code_verifier=code_verifier
+            )
+        except Exception as exc:
+            _log.exception("authy callback: token exchange failed for provider=%s", provider)
+            raise HTTPException(
+                status_code=400,
+                detail=f"OAuth token exchange failed: {exc}",
+            )
         if not result.success or not result.user:
+            _log.warning("authy callback: authentication failed: %s", result.error)
             raise HTTPException(status_code=401, detail=result.error or "authentication failed")
         user, _created = ensure_federated_user_on_callback(
             state.config_store,
