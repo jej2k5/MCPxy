@@ -838,6 +838,7 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
             and obstate is not None
             and public["active"]
         ):
+            request.state.onboarding_catalog_bypass = True
             return await call_next(request)
         # Fail closed: refuse ALL non-onboarding admin API calls when
         # no identity is resolvable from the live config, whether via
@@ -845,6 +846,15 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
         auth_cfg = state.runtime_config.config.auth
         if auth_cfg.authy.enabled:
             if state.config_store.count_admins() == 0:
+                # Belt-and-suspenders: allow catalog access during active
+                # onboarding even if the earlier bypass didn't fire.
+                if (
+                    path == "/admin/api/catalog"
+                    and obstate is not None
+                    and public["active"]
+                ):
+                    request.state.onboarding_catalog_bypass = True
+                    return await call_next(request)
                 return JSONResponse(
                     {
                         "detail": "authy_not_configured",
@@ -1872,7 +1882,8 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
         q: str = "",
         category: str | None = None,
     ) -> JSONResponse:
-        await require_admin_auth(request)
+        if not getattr(request.state, "onboarding_catalog_bypass", False):
+            await require_admin_auth(request)
         if state.catalog is None:
             raise HTTPException(status_code=503, detail="catalog_unavailable")
         entries = state.catalog.search(q, category=category)

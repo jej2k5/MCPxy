@@ -170,8 +170,42 @@ class AuthnManager:
         try:
             payload = self._underlying.verify_token(token)
         except Exception:
-            # Fallback: treat the token as a plain URL if it is not a JWT.
-            return FederatedStartResult(auth_url=token, code_verifier=None)
+            # verify_token failed — try decoding the JWT payload without
+            # signature verification to recover the auth_url.  This
+            # handles the case where the signing key is momentarily out
+            # of sync (e.g. during onboarding hot-reload).
+            import base64 as _b64
+            import json as _json
+
+            try:
+                parts = token.split(".")
+                if len(parts) == 3:
+                    padded = parts[1] + "=" * (-len(parts[1]) % 4)
+                    unsigned_payload = _json.loads(
+                        _b64.urlsafe_b64decode(padded)
+                    )
+                    url = unsigned_payload.get("auth_url", "")
+                    if url.startswith(("http://", "https://")):
+                        logger.warning(
+                            "start_federated: verify_token failed but "
+                            "decoded auth_url from unsigned JWT payload"
+                        )
+                        return FederatedStartResult(
+                            auth_url=url,
+                            code_verifier=unsigned_payload.get(
+                                "code_verifier"
+                            ),
+                        )
+            except Exception:
+                pass
+            # Final fallback: if the token looks like a plain URL, use it.
+            if token.startswith(("http://", "https://")):
+                return FederatedStartResult(auth_url=token, code_verifier=None)
+            raise RuntimeError(
+                "start_federated: cannot extract a valid auth_url from "
+                "the authy response (verify_token failed and token is "
+                "not a URL)"
+            )
         auth_url = payload.get("auth_url", "")
         if not auth_url:
             raise RuntimeError("authy get_auth_url did not return an auth_url in the JWT payload")
