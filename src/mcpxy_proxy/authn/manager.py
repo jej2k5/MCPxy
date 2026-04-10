@@ -24,6 +24,7 @@ from authy import (
     SamlSSOConfig,
     hash_password,
 )
+from authy.utils.jwt_utils import sign_token as _sign_token
 
 from mcpxy_proxy.config import AuthyConfig
 from mcpxy_proxy.storage.config_store import ConfigStore
@@ -248,6 +249,29 @@ class AuthnManager:
     @staticmethod
     def hash_password(password: str) -> str:
         return hash_password(password)
+
+    def sign_session_token(
+        self,
+        *,
+        user_id: int,
+        email: str,
+        name: str,
+        provider: str,
+    ) -> str:
+        """Sign a session JWT with the database user ID as ``sub``."""
+        import uuid
+
+        return _sign_token(
+            {
+                "sub": str(user_id),
+                "email": email,
+                "name": name,
+                "provider": provider,
+                "jti": str(uuid.uuid4()),
+            },
+            self._config.jwt_secret or "",
+            self._config.token_ttl_s,
+        )
 
     @property
     def config(self) -> AuthyConfig:

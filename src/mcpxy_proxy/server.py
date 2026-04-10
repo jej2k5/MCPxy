@@ -1086,7 +1086,16 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
             name=result.user.name,
         )
         authy_cfg = state.runtime_config.config.auth.authy
-        token = result.token or ""
+        # Re-sign the session JWT with the database user ID as ``sub``.
+        # The authy provider's JWT uses the external provider subject
+        # (e.g. a Microsoft UUID), but the session middleware expects
+        # ``sub`` to be the integer database user ID.
+        token = state.authn.sign_session_token(
+            user_id=user.id,
+            email=user.email,
+            name=user.name or user.email,
+            provider=provider,
+        )
         resp = RedirectResponse(url="/admin", status_code=302)
         resp.set_cookie(
             key=authy_cfg.cookie_name,
