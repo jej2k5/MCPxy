@@ -38,8 +38,26 @@ export default function App() {
         setOnboardingResolved(true);
         if (!body || !body.required) {
           const haveToken = Boolean(getToken());
-          setAuthed(haveToken);
-          setChecking(haveToken);
+          if (haveToken) {
+            setAuthed(true);
+            setChecking(true);
+          } else {
+            // No localStorage token — try session cookie (set by OAuth callback).
+            apiGet<MeResponse>("/admin/api/authy/me")
+              .then((data) => {
+                if (!cancelled) {
+                  setMe(data);
+                  setAuthed(true);
+                  setChecking(false);
+                }
+              })
+              .catch(() => {
+                if (!cancelled) {
+                  setAuthed(false);
+                  setChecking(false);
+                }
+              });
+          }
         }
       })
       .catch(() => {
