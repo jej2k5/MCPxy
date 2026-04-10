@@ -1021,7 +1021,12 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
             fed_result = await state.authn.start_federated(provider, oauth_state)
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-        _oauth_state_store[oauth_state] = (provider, time.time(), fed_result.code_verifier)
+        # Use the provider's actual OAuth state as the key — federated
+        # providers (M365, Google, OIDC) generate their own state parameter
+        # that appears in the callback URL, which differs from our
+        # server-generated oauth_state.
+        store_key = fed_result.oauth_state or oauth_state
+        _oauth_state_store[store_key] = (provider, time.time(), fed_result.code_verifier)
         return JSONResponse({"authorization_url": fed_result.auth_url})
 
     @app.get("/admin/api/authy/callback")
