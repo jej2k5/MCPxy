@@ -387,7 +387,8 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
         return resolve_admin_token(state.runtime_config.config.auth)
 
     # In-memory state-param store for federated OAuth login flows.
-    _oauth_state_store: dict[str, tuple[str, float]] = {}
+    # Maps state -> (provider, created_time, code_verifier).
+    _oauth_state_store: dict[str, tuple[str, float, str | None]] = {}
 
     async def _extract_request_principal(request: Request) -> Principal | None:
         """Resolve a Principal from the request using the Authy integration."""
@@ -1006,12 +1007,12 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
         if not provider:
             raise HTTPException(status_code=400, detail="provider required")
         oauth_state = _secrets.token_urlsafe(32)
-        _oauth_state_store[oauth_state] = (provider, time.time())
         try:
-            auth_url = await state.authn.start_federated(provider, oauth_state)
+            fed_result = await state.authn.start_federated(provider, oauth_state)
         except RuntimeError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-        return JSONResponse({"authorization_url": auth_url})
+        _oauth_state_store[oauth_state] = (provider, time.time(), fed_result.code_verifier)
+        return JSONResponse({"authorization_url": fed_result.auth_url})
 
     @app.get("/admin/api/authy/callback")
     async def admin_api_authy_callback(request: Request) -> Response:
@@ -1023,10 +1024,12 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
         entry = _oauth_state_store.pop(oauth_state, None)
         if entry is None:
             raise HTTPException(status_code=400, detail="invalid or expired state")
-        provider, created = entry
+        provider, created, code_verifier = entry
         if time.time() - created > 600:
             raise HTTPException(status_code=400, detail="state expired")
-        result = await state.authn.complete_federated(provider, code, oauth_state)
+        result = await state.authn.complete_federated(
+            provider, code, oauth_state, code_verifier=code_verifier
+        )
         if not result.success or not result.user:
             raise HTTPException(status_code=401, detail=result.error or "authentication failed")
         user, _created = ensure_federated_user_on_callback(

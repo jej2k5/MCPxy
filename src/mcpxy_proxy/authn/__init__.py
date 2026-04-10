@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .manager import AuthnManager
+from .manager import AuthnManager, FederatedStartResult
 from .middleware import Principal, extract_principal, require_admin_principal, require_principal
 from .users import (
     accept_invite,
@@ -15,6 +15,7 @@ from .users import (
 
 __all__ = [
     "AuthnManager",
+    "FederatedStartResult",
     "Principal",
     "accept_invite",
     "create_bootstrap_admin",
