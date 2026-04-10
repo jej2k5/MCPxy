@@ -828,6 +828,16 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
                 },
                 status_code=503,
             )
+        # During active onboarding with federated auth, the admin user
+        # does not exist until the OAuth callback completes.  Allow
+        # read-only catalog access so the "add first server" wizard
+        # step can load the MCP catalog.
+        if (
+            path == "/admin/api/catalog"
+            and obstate is not None
+            and public["active"]
+        ):
+            return await call_next(request)
         # Fail closed: refuse ALL non-onboarding admin API calls when
         # no identity is resolvable from the live config, whether via
         # authy (admin user exists) or legacy bearer.
