@@ -12,30 +12,18 @@ import Import from "./pages/Import";
 import Logs from "./pages/Logs";
 import Config from "./pages/Config";
 import Onboarding from "./pages/Onboarding";
+import Users from "./pages/Users";
+import Tokens from "./pages/Tokens";
 import { apiGet, getToken } from "./api/client";
-import type { OnboardingStatus } from "./api/types";
+import type { MeResponse, OnboardingStatus } from "./api/types";
 
-/**
- * App shell with three startup states:
- *
- *  1. **Onboarding required** — ``GET /admin/api/onboarding/status`` returns
- *     ``required=true`` (fresh DB, no admin token yet). Render the wizard
- *     instead of LoginGate; the wizard writes the token and localStorage.
- *  2. **Needs login** — onboarding not required and no stored token; show
- *     LoginGate so the operator pastes their bearer.
- *  3. **Authed** — stored token exists and the probe against
- *     ``/admin/api/config`` succeeds; render the normal dashboard.
- *
- * We probe the onboarding status BEFORE consulting localStorage because a
- * stale token from a previous install shouldn't mask a fresh DB.
- */
 export default function App() {
   const [onboarding, setOnboarding] = useState<OnboardingStatus | null>(null);
   const [onboardingResolved, setOnboardingResolved] = useState<boolean>(false);
   const [authed, setAuthed] = useState<boolean>(false);
   const [checking, setChecking] = useState<boolean>(false);
+  const [me, setMe] = useState<MeResponse | null>(null);
 
-  // Always fetch onboarding status first.
   useEffect(() => {
     let cancelled = false;
     fetch("/admin/api/onboarding/status", {
@@ -47,7 +35,6 @@ export default function App() {
         setOnboarding(body);
         setOnboardingResolved(true);
         if (!body || !body.required) {
-          // Not onboarding: fall through to the normal token flow.
           const haveToken = Boolean(getToken());
           setAuthed(haveToken);
           setChecking(haveToken);
@@ -65,22 +52,38 @@ export default function App() {
     };
   }, []);
 
-  // Probe an auth-gated endpoint so stale tokens drop us back to LoginGate.
   useEffect(() => {
     if (!authed) {
       setChecking(false);
+      setMe(null);
       return;
     }
     let cancelled = false;
-    apiGet<unknown>("/admin/api/config")
-      .then(() => {
-        if (!cancelled) setChecking(false);
-      })
-      .catch(() => {
+    // Try /admin/api/authy/me first, then fall back to a config probe
+    // for legacy bearer-token deployments.
+    apiGet<MeResponse>("/admin/api/authy/me")
+      .then((data) => {
         if (!cancelled) {
-          setAuthed(false);
+          setMe(data);
           setChecking(false);
         }
+      })
+      .catch(() => {
+        if (cancelled) return;
+        // Legacy fallback: probe an auth-gated endpoint.
+        apiGet<unknown>("/admin/api/config")
+          .then(() => {
+            if (!cancelled) {
+              setMe({ user_id: -1, email: "admin", role: "admin", provider: "legacy", auth_mode: "legacy" });
+              setChecking(false);
+            }
+          })
+          .catch(() => {
+            if (!cancelled) {
+              setAuthed(false);
+              setChecking(false);
+            }
+          });
       });
     return () => {
       cancelled = true;
@@ -90,7 +93,7 @@ export default function App() {
   if (!onboardingResolved) {
     return (
       <div className="flex h-screen items-center justify-center text-slate-400">
-        Connecting to MCPy…
+        Connecting to MCPy...
       </div>
     );
   }
@@ -100,9 +103,6 @@ export default function App() {
       <Onboarding
         initialStatus={onboarding}
         onComplete={() => {
-          // Flip the gate off and let the normal token probe run. The
-          // wizard has already persisted the bearer into localStorage
-          // via ``setToken``, so the next useEffect finds it.
           setOnboarding({ ...onboarding, required: false, completed: true, active: false });
           setAuthed(Boolean(getToken()));
           setChecking(Boolean(getToken()));
@@ -122,9 +122,11 @@ export default function App() {
     );
   }
 
+  const isAdmin = me?.role === "admin";
+
   return (
     <div className="flex h-screen">
-      <Sidebar onSignOut={() => setAuthed(false)} />
+      <Sidebar onSignOut={() => setAuthed(false)} isAdmin={isAdmin} />
       <main className="flex-1 overflow-auto scroll-thin">
         <div className="mx-auto max-w-6xl p-6">
           <Routes>
@@ -138,6 +140,8 @@ export default function App() {
             <Route path="/import" element={<Import />} />
             <Route path="/logs" element={<Logs />} />
             <Route path="/config" element={<Config />} />
+            <Route path="/tokens" element={<Tokens />} />
+            {isAdmin && <Route path="/users" element={<Users />} />}
             <Route path="*" element={<Navigate to="/overview" replace />} />
           </Routes>
         </div>

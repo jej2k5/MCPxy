@@ -48,7 +48,7 @@ from sqlalchemy import (
     func,
 )
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 # A single MetaData object so create_all() / reflect() work in one call.
 METADATA = MetaData()
@@ -143,6 +143,65 @@ onboarding_table = Table(
     Column("first_upstream_at", DateTime(timezone=True), nullable=True),
     Column("completed_at", DateTime(timezone=True), nullable=True),
     Column("completed_by", String(128), nullable=True),
+    Column("bootstrap_admin_email", String(254), nullable=True),
+)
+
+
+# Multi-user identity tables (schema v2).
+#
+# Added by the Authy integration to support multi-provider sign-on,
+# admin invites, personal access tokens, and JWT revocation.
+
+users_table = Table(
+    "users",
+    METADATA,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("email", String(254), nullable=False, unique=True),
+    Column("username", String(128), nullable=True, unique=True),
+    Column("name", String(256), nullable=True),
+    Column("password_hash", String(255), nullable=True),
+    Column("provider", String(32), nullable=False),
+    Column("provider_subject", String(256), nullable=True),
+    Column("role", String(16), nullable=False, server_default="member"),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("invited_by", Integer, nullable=True),
+    Column("activated_at", DateTime(timezone=True), nullable=True),
+    Column("disabled_at", DateTime(timezone=True), nullable=True),
+)
+
+user_invites_table = Table(
+    "user_invites",
+    METADATA,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("token_hash", String(128), nullable=False, unique=True),
+    Column("email", String(254), nullable=False),
+    Column("role", String(16), nullable=False, server_default="member"),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("expires_at", DateTime(timezone=True), nullable=False),
+    Column("consumed_at", DateTime(timezone=True), nullable=True),
+    Column("invited_by", Integer, nullable=True),
+)
+
+personal_access_tokens_table = Table(
+    "personal_access_tokens",
+    METADATA,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("user_id", Integer, nullable=False, index=True),
+    Column("name", String(128), nullable=False),
+    Column("token_prefix", String(16), nullable=False),
+    Column("token_hash", String(255), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("last_used_at", DateTime(timezone=True), nullable=True),
+    Column("expires_at", DateTime(timezone=True), nullable=True),
+    Column("revoked_at", DateTime(timezone=True), nullable=True),
+)
+
+revoked_jwt_ids_table = Table(
+    "revoked_jwt_ids",
+    METADATA,
+    Column("jti", String(64), primary_key=True),
+    Column("revoked_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("expires_at", DateTime(timezone=True), nullable=False),
 )
 
 
@@ -152,7 +211,11 @@ __all__ = [
     "config_history_table",
     "config_kv_table",
     "onboarding_table",
+    "personal_access_tokens_table",
+    "revoked_jwt_ids_table",
     "schema_meta_table",
     "secrets_table",
     "upstreams_table",
+    "user_invites_table",
+    "users_table",
 ]

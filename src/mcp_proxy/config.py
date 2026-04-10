@@ -24,6 +24,103 @@ SECRET_RE = re.compile(r"\$\{secret:([A-Za-z0-9_][A-Za-z0-9_\-]*)\}")
 SecretResolver = Callable[[str], "str | None"]
 
 
+class AuthyLocalConfig(BaseModel):
+    """Local username/password provider config."""
+
+    token_ttl: int = Field(default=3600, ge=300)
+
+
+class AuthyGoogleConfig(BaseModel):
+    """Google OAuth provider config."""
+
+    client_id: str
+    client_secret: str
+    redirect_uri: str
+
+
+class AuthyM365Config(BaseModel):
+    """Microsoft 365 OAuth provider config."""
+
+    client_id: str
+    client_secret: str
+    tenant_id: str
+    redirect_uri: str
+
+
+class AuthyOidcConfig(BaseModel):
+    """Generic OIDC SSO provider config."""
+
+    issuer_url: str
+    client_id: str
+    client_secret: str
+    redirect_uri: str
+
+
+class AuthySamlConfig(BaseModel):
+    """SAML SSO provider config."""
+
+    sp_entity_id: str
+    idp_sso_url: str
+    idp_cert: str
+    sp_private_key: str | None = None
+
+
+class AuthyConfig(BaseModel):
+    """Multi-provider authentication via the ``authy`` package.
+
+    When ``enabled`` is true, the proxy delegates all identity checks
+    (admin UI and ``/mcp`` proxy) to the ``authy.AuthManager`` instance
+    configured here. The legacy ``AuthConfig.token`` / ``token_env``
+    fields are ignored.
+
+    When ``enabled`` is false (the default for existing deployments),
+    behaviour is exactly the same as before this feature shipped.
+
+    Compat matrix:
+
+    +------------------+--------------+--------------------------------+
+    | ``authy.enabled``| ``auth.token``| Behaviour                     |
+    +------------------+--------------+--------------------------------+
+    | false            | set          | Legacy bearer (unchanged)      |
+    | false            | unset        | Fail-closed 503                |
+    | true             | any          | Authy flow; legacy ignored     |
+    +------------------+--------------+--------------------------------+
+    """
+
+    enabled: bool = False
+    primary_provider: Literal[
+        "local", "google", "m365", "sso_oidc", "sso_saml"
+    ] | None = None
+    jwt_secret: str | None = None
+    token_ttl_s: int = Field(default=86400, ge=300)
+    cookie_name: str = "mcpy_session"
+    cookie_secure: bool = True
+    cookie_same_site: Literal["lax", "strict", "none"] = "lax"
+    local: AuthyLocalConfig | None = None
+    google: AuthyGoogleConfig | None = None
+    m365: AuthyM365Config | None = None
+    sso_oidc: AuthyOidcConfig | None = None
+    sso_saml: AuthySamlConfig | None = None
+
+    @model_validator(mode="after")
+    def _check_primary(self) -> "AuthyConfig":
+        if not self.enabled:
+            return self
+        if self.primary_provider is None:
+            raise ValueError("authy.primary_provider is required when authy.enabled")
+        if self.primary_provider == "local" and self.local is None:
+            self.local = AuthyLocalConfig()
+        provider_field = self.primary_provider.replace("-", "_")
+        if getattr(self, provider_field, None) is None and self.primary_provider != "local":
+            raise ValueError(
+                f"authy.{provider_field} config block is required when "
+                f"primary_provider={self.primary_provider!r}"
+            )
+        if not self.jwt_secret:
+            raise ValueError("authy.jwt_secret is required when authy.enabled")
+        return self
+
+
 class AuthConfig(BaseModel):
     """Authentication settings.
 
@@ -36,6 +133,10 @@ class AuthConfig(BaseModel):
       request time. Left for backwards compatibility with file-based
       deployments that wire MCP_PROXY_TOKEN via ``.env`` or compose.
 
+    When ``authy.enabled`` is true, both ``token`` and ``token_env``
+    are ignored; all identity checks delegate to the Authy integration
+    module instead.
+
     :func:`mcp_proxy.config.resolve_admin_token` returns the effective
     bearer given an ``AuthConfig`` + an env lookup + a secret resolver,
     which is what the server's request-auth code calls. Direct callers
@@ -44,6 +145,7 @@ class AuthConfig(BaseModel):
 
     token: str | None = None
     token_env: str | None = None
+    authy: AuthyConfig = Field(default_factory=AuthyConfig)
 
 
 def resolve_admin_token(
@@ -76,6 +178,24 @@ def resolve_admin_token(
         if value:
             return value
     return None
+
+
+def resolve_effective_auth_mode(
+    auth: "AuthConfig",
+    *,
+    env_lookup: Callable[[str], "str | None"] | None = None,
+) -> Literal["authy", "legacy", "none"]:
+    """Return the auth mode the server should use.
+
+    * ``"authy"``  — delegate to the ``authy.AuthManager`` integration.
+    * ``"legacy"`` — single shared bearer token (the pre-Authy default).
+    * ``"none"``   — no authentication configured at all.
+    """
+    if auth.authy.enabled:
+        return "authy"
+    if resolve_admin_token(auth, env_lookup=env_lookup):
+        return "legacy"
+    return "none"
 
 
 class AdminConfig(BaseModel):
@@ -490,6 +610,20 @@ def redact_secrets(payload: dict[str, Any]) -> dict[str, Any]:
             auth_block["token"] = "***REDACTED***"
         if auth_block.get("token_env"):
             auth_block["token_env"] = "***REDACTED_ENV***"
+        authy_block = auth_block.get("authy") or {}
+        if isinstance(authy_block, dict):
+            if authy_block.get("jwt_secret"):
+                authy_block["jwt_secret"] = "***REDACTED***"
+            for provider_key in ("google", "m365", "sso_oidc"):
+                prov = authy_block.get(provider_key)
+                if isinstance(prov, dict) and prov.get("client_secret"):
+                    prov["client_secret"] = "***REDACTED***"
+            saml = authy_block.get("sso_saml")
+            if isinstance(saml, dict):
+                if saml.get("idp_cert"):
+                    saml["idp_cert"] = "***REDACTED***"
+                if saml.get("sp_private_key"):
+                    saml["sp_private_key"] = "***REDACTED***"
     tls_block = redacted.get("tls") or {}
     if isinstance(tls_block, dict) and tls_block.get("keyfile_password"):
         tls_block["keyfile_password"] = "***REDACTED***"

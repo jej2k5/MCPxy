@@ -53,8 +53,12 @@ from mcp_proxy.storage.schema import (
     config_history_table,
     config_kv_table,
     onboarding_table,
+    personal_access_tokens_table,
+    revoked_jwt_ids_table,
     secrets_table,
     upstreams_table,
+    user_invites_table,
+    users_table,
 )
 
 logger = logging.getLogger(__name__)
@@ -193,6 +197,95 @@ class OnboardingState:
         }
 
 
+@dataclass
+class UserRecord:
+    """A registered MCPy user."""
+
+    id: int
+    email: str
+    username: str | None
+    name: str | None
+    provider: str
+    provider_subject: str | None
+    role: str
+    created_at: float
+    invited_by: int | None
+    activated_at: float | None
+    disabled_at: float | None
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "email": self.email,
+            "username": self.username,
+            "name": self.name,
+            "provider": self.provider,
+            "role": self.role,
+            "created_at": self.created_at,
+            "invited_by": self.invited_by,
+            "activated_at": self.activated_at,
+            "disabled_at": self.disabled_at,
+        }
+
+    def to_local_dict(self, password_hash: str | None = None) -> dict[str, Any] | None:
+        """Shape expected by authy's LocalProvider ``find_user`` callback."""
+        if password_hash is None:
+            return None
+        return {
+            "id": str(self.id),
+            "email": self.email,
+            "name": self.name or self.email,
+            "password_hash": password_hash,
+        }
+
+
+@dataclass
+class InviteRecord:
+    id: int
+    token_hash: str
+    email: str
+    role: str
+    created_at: float
+    expires_at: float
+    consumed_at: float | None
+    invited_by: int | None
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "email": self.email,
+            "role": self.role,
+            "created_at": self.created_at,
+            "expires_at": self.expires_at,
+            "consumed_at": self.consumed_at,
+            "invited_by": self.invited_by,
+        }
+
+
+@dataclass
+class PatRecord:
+    id: int
+    user_id: int
+    name: str
+    token_prefix: str
+    created_at: float
+    last_used_at: float | None
+    expires_at: float | None
+    revoked_at: float | None
+
+    def to_public_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "name": self.name,
+            "token_prefix": self.token_prefix,
+            "created_at": self.created_at,
+            "last_used_at": self.last_used_at,
+            "expires_at": self.expires_at,
+            "revoked_at": self.revoked_at,
+        }
+
+
 class ConfigStore:
     """Single point of truth for everything persistent in MCPy.
 
@@ -208,6 +301,7 @@ class ConfigStore:
         self._active_payload: dict[str, Any] | None = None
         self._active_version: int = 0
         self._secrets_cache: dict[str, SecretRecord] = {}
+        self._revoked_jwts: set[str] = set()
         self._loaded = False
 
     # ------------------------------------------------------------------
@@ -242,17 +336,21 @@ class ConfigStore:
                 )
             ).all()
 
+        # Warm the revoked JWT set for fast is_jwt_revoked lookups.
+        with self._engine.connect() as conn:
+            revoked_rows = conn.execute(
+                select(revoked_jwt_ids_table.c.jti).where(
+                    revoked_jwt_ids_table.c.expires_at > func.now()
+                )
+            ).all()
+        revoked_jti_set = {str(r[0]) for r in revoked_rows}
+
         with self._lock:
             self._secrets_cache.clear()
             for name, value_ct, description, created_at, updated_at, last_used_at in rows:
                 try:
                     plaintext = self._fernet.decrypt(bytes(value_ct)).decode("utf-8")
                 except InvalidToken as exc:
-                    # Subclass of ConfigStoreError so callers that catch
-                    # the broader type still see this, but the more
-                    # specific class lets the admin API distinguish
-                    # "your encryption key is wrong" from generic
-                    # storage failures.
                     raise SecretStoreError(
                         f"secret {name!r} cannot be decrypted: key mismatch. "
                         "Restore the original MCPY_SECRETS_KEY or wipe the "
@@ -266,6 +364,7 @@ class ConfigStore:
                     updated_at=_epoch(updated_at) or time.time(),
                     last_used_at=_epoch(last_used_at),
                 )
+            self._revoked_jwts = revoked_jti_set
         self._loaded = True
 
     def close(self) -> None:
@@ -610,6 +709,466 @@ class ConfigStore:
         assert state is not None
         return state
 
+    def stamp_bootstrap_admin_email(self, email: str) -> None:
+        with self._lock:
+            with self._engine.begin() as conn:
+                conn.execute(
+                    update(onboarding_table).values(bootstrap_admin_email=email)
+                )
+
+    def get_bootstrap_admin_email(self) -> str | None:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                select(onboarding_table.c.bootstrap_admin_email).limit(1)
+            ).first()
+        if row is None:
+            return None
+        return row[0]
+
+    # ------------------------------------------------------------------
+    # Users
+    # ------------------------------------------------------------------
+
+    def _row_to_user(self, row: Any) -> UserRecord:
+        return UserRecord(
+            id=int(row[0]),
+            email=str(row[1]),
+            username=row[2],
+            name=row[3],
+            provider=str(row[4]),
+            provider_subject=row[5],
+            role=str(row[6]),
+            created_at=_epoch(row[7]) or time.time(),
+            invited_by=row[8],
+            activated_at=_epoch(row[9]),
+            disabled_at=_epoch(row[10]),
+        )
+
+    _USER_COLS = (
+        users_table.c.id,
+        users_table.c.email,
+        users_table.c.username,
+        users_table.c.name,
+        users_table.c.provider,
+        users_table.c.provider_subject,
+        users_table.c.role,
+        users_table.c.created_at,
+        users_table.c.invited_by,
+        users_table.c.activated_at,
+        users_table.c.disabled_at,
+    )
+
+    def create_user(
+        self,
+        *,
+        email: str,
+        provider: str,
+        role: str = "member",
+        username: str | None = None,
+        name: str | None = None,
+        password_hash: str | None = None,
+        provider_subject: str | None = None,
+        invited_by: int | None = None,
+        activated: bool = False,
+    ) -> UserRecord:
+        with self._lock:
+            with self._engine.begin() as conn:
+                result = conn.execute(
+                    insert(users_table).values(
+                        email=email,
+                        username=username,
+                        name=name,
+                        password_hash=password_hash,
+                        provider=provider,
+                        provider_subject=provider_subject,
+                        role=role,
+                        invited_by=invited_by,
+                        activated_at=func.now() if activated else None,
+                    )
+                )
+                user_id = result.inserted_primary_key[0]
+                row = conn.execute(
+                    select(*self._USER_COLS).where(users_table.c.id == user_id)
+                ).first()
+        assert row is not None
+        return self._row_to_user(row)
+
+    def get_user(self, user_id: int) -> UserRecord | None:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                select(*self._USER_COLS).where(users_table.c.id == user_id)
+            ).first()
+        if row is None:
+            return None
+        return self._row_to_user(row)
+
+    def get_user_by_email(self, email: str) -> UserRecord | None:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                select(*self._USER_COLS).where(users_table.c.email == email)
+            ).first()
+        if row is None:
+            return None
+        return self._row_to_user(row)
+
+    def get_user_password_hash(self, user_id: int) -> str | None:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                select(users_table.c.password_hash).where(users_table.c.id == user_id)
+            ).first()
+        if row is None:
+            return None
+        return row[0]
+
+    def get_user_by_provider_subject(
+        self, provider: str, subject: str
+    ) -> UserRecord | None:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                select(*self._USER_COLS).where(
+                    (users_table.c.provider == provider)
+                    & (users_table.c.provider_subject == subject)
+                )
+            ).first()
+        if row is None:
+            return None
+        return self._row_to_user(row)
+
+    def list_users(self, *, include_disabled: bool = False) -> list[UserRecord]:
+        stmt = select(*self._USER_COLS).order_by(users_table.c.id)
+        if not include_disabled:
+            stmt = stmt.where(users_table.c.disabled_at.is_(None))
+        with self._engine.connect() as conn:
+            rows = conn.execute(stmt).all()
+        return [self._row_to_user(r) for r in rows]
+
+    def update_user_role(self, user_id: int, role: str) -> None:
+        with self._lock:
+            with self._engine.begin() as conn:
+                conn.execute(
+                    update(users_table)
+                    .where(users_table.c.id == user_id)
+                    .values(role=role)
+                )
+
+    def activate_user(self, user_id: int) -> None:
+        with self._lock:
+            with self._engine.begin() as conn:
+                conn.execute(
+                    update(users_table)
+                    .where(users_table.c.id == user_id)
+                    .values(activated_at=func.now())
+                )
+
+    def disable_user(self, user_id: int) -> None:
+        with self._lock:
+            with self._engine.begin() as conn:
+                conn.execute(
+                    update(users_table)
+                    .where(users_table.c.id == user_id)
+                    .values(disabled_at=func.now())
+                )
+
+    def delete_user(self, user_id: int) -> bool:
+        with self._lock:
+            with self._engine.begin() as conn:
+                result = conn.execute(
+                    delete(users_table).where(users_table.c.id == user_id)
+                )
+                return result.rowcount > 0
+
+    def count_admins(self) -> int:
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                select(func.count())
+                .select_from(users_table)
+                .where(
+                    (users_table.c.role == "admin")
+                    & users_table.c.disabled_at.is_(None)
+                )
+            ).first()
+        return int(row[0]) if row else 0
+
+    def set_user_password_hash(self, user_id: int, password_hash: str) -> None:
+        with self._lock:
+            with self._engine.begin() as conn:
+                conn.execute(
+                    update(users_table)
+                    .where(users_table.c.id == user_id)
+                    .values(password_hash=password_hash)
+                )
+
+    # ------------------------------------------------------------------
+    # User invites
+    # ------------------------------------------------------------------
+
+    def create_invite(
+        self,
+        *,
+        email: str,
+        role: str,
+        token_hash: str,
+        expires_at: datetime,
+        invited_by: int | None = None,
+    ) -> InviteRecord:
+        with self._lock:
+            with self._engine.begin() as conn:
+                result = conn.execute(
+                    insert(user_invites_table).values(
+                        token_hash=token_hash,
+                        email=email,
+                        role=role,
+                        expires_at=expires_at,
+                        invited_by=invited_by,
+                    )
+                )
+                invite_id = result.inserted_primary_key[0]
+                row = conn.execute(
+                    select(
+                        user_invites_table.c.id,
+                        user_invites_table.c.token_hash,
+                        user_invites_table.c.email,
+                        user_invites_table.c.role,
+                        user_invites_table.c.created_at,
+                        user_invites_table.c.expires_at,
+                        user_invites_table.c.consumed_at,
+                        user_invites_table.c.invited_by,
+                    ).where(user_invites_table.c.id == invite_id)
+                ).first()
+        assert row is not None
+        return InviteRecord(
+            id=int(row[0]),
+            token_hash=str(row[1]),
+            email=str(row[2]),
+            role=str(row[3]),
+            created_at=_epoch(row[4]) or time.time(),
+            expires_at=_epoch(row[5]) or time.time(),
+            consumed_at=_epoch(row[6]),
+            invited_by=row[7],
+        )
+
+    def list_invites(self) -> list[InviteRecord]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                select(
+                    user_invites_table.c.id,
+                    user_invites_table.c.token_hash,
+                    user_invites_table.c.email,
+                    user_invites_table.c.role,
+                    user_invites_table.c.created_at,
+                    user_invites_table.c.expires_at,
+                    user_invites_table.c.consumed_at,
+                    user_invites_table.c.invited_by,
+                ).order_by(user_invites_table.c.id.desc())
+            ).all()
+        return [
+            InviteRecord(
+                id=int(r[0]),
+                token_hash=str(r[1]),
+                email=str(r[2]),
+                role=str(r[3]),
+                created_at=_epoch(r[4]) or time.time(),
+                expires_at=_epoch(r[5]) or time.time(),
+                consumed_at=_epoch(r[6]),
+                invited_by=r[7],
+            )
+            for r in rows
+        ]
+
+    def consume_invite(self, invite_id: int) -> bool:
+        with self._lock:
+            with self._engine.begin() as conn:
+                result = conn.execute(
+                    update(user_invites_table)
+                    .where(
+                        (user_invites_table.c.id == invite_id)
+                        & user_invites_table.c.consumed_at.is_(None)
+                    )
+                    .values(consumed_at=func.now())
+                )
+                return result.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Personal access tokens
+    # ------------------------------------------------------------------
+
+    def create_pat(
+        self,
+        *,
+        user_id: int,
+        name: str,
+        token_hash: str,
+        token_prefix: str,
+        expires_at: datetime | None = None,
+    ) -> PatRecord:
+        with self._lock:
+            with self._engine.begin() as conn:
+                result = conn.execute(
+                    insert(personal_access_tokens_table).values(
+                        user_id=user_id,
+                        name=name,
+                        token_hash=token_hash,
+                        token_prefix=token_prefix,
+                        expires_at=expires_at,
+                    )
+                )
+                pat_id = result.inserted_primary_key[0]
+                row = conn.execute(
+                    select(
+                        personal_access_tokens_table.c.id,
+                        personal_access_tokens_table.c.user_id,
+                        personal_access_tokens_table.c.name,
+                        personal_access_tokens_table.c.token_prefix,
+                        personal_access_tokens_table.c.created_at,
+                        personal_access_tokens_table.c.last_used_at,
+                        personal_access_tokens_table.c.expires_at,
+                        personal_access_tokens_table.c.revoked_at,
+                    ).where(personal_access_tokens_table.c.id == pat_id)
+                ).first()
+        assert row is not None
+        return PatRecord(
+            id=int(row[0]),
+            user_id=int(row[1]),
+            name=str(row[2]),
+            token_prefix=str(row[3]),
+            created_at=_epoch(row[4]) or time.time(),
+            last_used_at=_epoch(row[5]),
+            expires_at=_epoch(row[6]),
+            revoked_at=_epoch(row[7]),
+        )
+
+    def list_pats_for_user(self, user_id: int) -> list[PatRecord]:
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                select(
+                    personal_access_tokens_table.c.id,
+                    personal_access_tokens_table.c.user_id,
+                    personal_access_tokens_table.c.name,
+                    personal_access_tokens_table.c.token_prefix,
+                    personal_access_tokens_table.c.created_at,
+                    personal_access_tokens_table.c.last_used_at,
+                    personal_access_tokens_table.c.expires_at,
+                    personal_access_tokens_table.c.revoked_at,
+                )
+                .where(
+                    (personal_access_tokens_table.c.user_id == user_id)
+                    & personal_access_tokens_table.c.revoked_at.is_(None)
+                )
+                .order_by(personal_access_tokens_table.c.id.desc())
+            ).all()
+        return [
+            PatRecord(
+                id=int(r[0]),
+                user_id=int(r[1]),
+                name=str(r[2]),
+                token_prefix=str(r[3]),
+                created_at=_epoch(r[4]) or time.time(),
+                last_used_at=_epoch(r[5]),
+                expires_at=_epoch(r[6]),
+                revoked_at=_epoch(r[7]),
+            )
+            for r in rows
+        ]
+
+    def find_active_pats_by_prefix(self, prefix: str) -> list[tuple[PatRecord, str]]:
+        """Return live PATs matching the given prefix along with their hash."""
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                select(
+                    personal_access_tokens_table.c.id,
+                    personal_access_tokens_table.c.user_id,
+                    personal_access_tokens_table.c.name,
+                    personal_access_tokens_table.c.token_prefix,
+                    personal_access_tokens_table.c.created_at,
+                    personal_access_tokens_table.c.last_used_at,
+                    personal_access_tokens_table.c.expires_at,
+                    personal_access_tokens_table.c.revoked_at,
+                    personal_access_tokens_table.c.token_hash,
+                ).where(
+                    (personal_access_tokens_table.c.token_prefix == prefix)
+                    & personal_access_tokens_table.c.revoked_at.is_(None)
+                )
+            ).all()
+        now = time.time()
+        results: list[tuple[PatRecord, str]] = []
+        for r in rows:
+            exp = _epoch(r[6])
+            if exp is not None and exp < now:
+                continue
+            results.append((
+                PatRecord(
+                    id=int(r[0]),
+                    user_id=int(r[1]),
+                    name=str(r[2]),
+                    token_prefix=str(r[3]),
+                    created_at=_epoch(r[4]) or time.time(),
+                    last_used_at=_epoch(r[5]),
+                    expires_at=exp,
+                    revoked_at=_epoch(r[7]),
+                ),
+                str(r[8]),
+            ))
+        return results
+
+    def touch_pat_last_used(self, pat_id: int) -> None:
+        try:
+            with self._engine.begin() as conn:
+                conn.execute(
+                    update(personal_access_tokens_table)
+                    .where(personal_access_tokens_table.c.id == pat_id)
+                    .values(last_used_at=func.now())
+                )
+        except Exception:
+            pass  # fire-and-forget; never block a proxy request
+
+    def revoke_pat(self, pat_id: int, user_id: int | None = None) -> bool:
+        with self._lock:
+            with self._engine.begin() as conn:
+                stmt = (
+                    update(personal_access_tokens_table)
+                    .where(
+                        (personal_access_tokens_table.c.id == pat_id)
+                        & personal_access_tokens_table.c.revoked_at.is_(None)
+                    )
+                    .values(revoked_at=func.now())
+                )
+                if user_id is not None:
+                    stmt = stmt.where(
+                        personal_access_tokens_table.c.user_id == user_id
+                    )
+                result = conn.execute(stmt)
+                return result.rowcount > 0
+
+    def revoke_all_pats_for_user(self, user_id: int) -> int:
+        with self._lock:
+            with self._engine.begin() as conn:
+                result = conn.execute(
+                    update(personal_access_tokens_table)
+                    .where(
+                        (personal_access_tokens_table.c.user_id == user_id)
+                        & personal_access_tokens_table.c.revoked_at.is_(None)
+                    )
+                    .values(revoked_at=func.now())
+                )
+                return result.rowcount
+
+    # ------------------------------------------------------------------
+    # JWT revocation
+    # ------------------------------------------------------------------
+
+    def revoke_jwt(self, jti: str, expires_at: datetime) -> None:
+        with self._lock:
+            with self._engine.begin() as conn:
+                conn.execute(
+                    insert(revoked_jwt_ids_table).values(
+                        jti=jti, expires_at=expires_at
+                    )
+                )
+            self._revoked_jwts.add(jti)
+
+    def is_jwt_revoked(self, jti: str) -> bool:
+        return jti in self._revoked_jwts
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -654,11 +1213,14 @@ __all__ = [
     "ACTIVE_CONFIG_KEY",
     "ConfigStore",
     "ConfigStoreError",
+    "InviteRecord",
     "OnboardingState",
+    "PatRecord",
     "SECRET_NAME_RE",
     "SecretNotFoundError",
     "SecretRecord",
     "SecretStoreError",
     "UpstreamRecord",
+    "UserRecord",
     "open_store",
 ]

@@ -255,3 +255,63 @@ export interface ManualUpstreamResponse {
   error?: string;
 }
 
+// ---------------------------------------------------------------------------
+// Authy multi-provider authentication
+// ---------------------------------------------------------------------------
+
+export type AuthyProviderKind = "local" | "google" | "m365" | "sso_oidc" | "sso_saml";
+
+export interface ProvidersResponse {
+  providers: string[];
+  authy_enabled: boolean;
+}
+
+export interface LoginResponse {
+  token: string;
+  user: { id: string; email: string; name: string; provider: string } | null;
+}
+
+export interface MeResponse {
+  user_id: number;
+  email: string;
+  role: string;
+  provider: string;
+  auth_mode: string;
+}
+
+export interface UserRow {
+  id: number;
+  email: string;
+  username: string | null;
+  name: string | null;
+  provider: string;
+  role: string;
+  created_at: number;
+  invited_by: number | null;
+  activated_at: number | null;
+  disabled_at: number | null;
+}
+
+export interface InviteResponse {
+  id: number;
+  email: string;
+  role: string;
+  created_at: number;
+  expires_at: number;
+  consumed_at: number | null;
+  invited_by: number | null;
+  plaintext_token?: string;
+}
+
+export interface PatRow {
+  id: number;
+  user_id: number;
+  name: string;
+  token_prefix: string;
+  created_at: number;
+  last_used_at: number | null;
+  expires_at: number | null;
+  revoked_at: number | null;
+  plaintext?: string;
+}
+

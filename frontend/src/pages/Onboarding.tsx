@@ -125,7 +125,7 @@ function Stepper({ step }: { step: Step }) {
       <span className="text-slate-600">—</span>
       <StepPill n={2} active={step === 2} done={step > 2} label="Storage" />
       <span className="text-slate-600">—</span>
-      <StepPill n={3} active={step === 3} done={step > 3} label="Admin token" />
+      <StepPill n={3} active={step === 3} done={step > 3} label="Authentication" />
       <span className="text-slate-600">—</span>
       <StepPill n={4} active={step === 4} done={step > 4} label="First server" />
       <span className="text-slate-600">—</span>
@@ -222,27 +222,13 @@ export default function Onboarding({
                 />
               )}
               {step === 3 && (
-                <TokenStep
+                <AuthStep
                   busy={busy}
                   onBusy={setBusy}
                   onError={setError}
-                  onNext={async (token) => {
-                    try {
-                      setError(null);
-                      setBusy(true);
-                      const res =
-                        await onboardingPost<OnboardingSetTokenResponse>(
-                          "/admin/api/onboarding/set_admin_token",
-                          { token },
-                        );
-                      setStatus(res.onboarding);
-                      persistToken(token);
-                      setStep(4);
-                    } catch (e) {
-                      setError(e instanceof Error ? e.message : String(e));
-                    } finally {
-                      setBusy(false);
-                    }
+                  onNext={async () => {
+                    await refreshStatus();
+                    setStep(4);
                   }}
                 />
               )}
@@ -774,7 +760,222 @@ function RestartRequiredCard({
 }
 
 // ---------------------------------------------------------------------------
-// Step 3 — Admin token
+// Step 3 — Authentication (Authy)
+// ---------------------------------------------------------------------------
+
+type AuthProvider = "local" | "google" | "m365" | "sso_oidc" | "sso_saml";
+
+function AuthStep({
+  busy,
+  onBusy,
+  onError,
+  onNext,
+}: {
+  busy: boolean;
+  onBusy: (b: boolean) => void;
+  onError: (e: string | null) => void;
+  onNext: () => void;
+}) {
+  const [provider, setProvider] = useState<AuthProvider | null>(null);
+  const [email, setEmail] = useState("");
+  const [name, setName] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPw, setConfirmPw] = useState("");
+  // Google / M365 / SSO fields
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [redirectUri, setRedirectUri] = useState(
+    `${window.location.origin}/admin/api/authy/callback`,
+  );
+  const [tenantId, setTenantId] = useState("");
+  const [issuerUrl, setIssuerUrl] = useState("");
+  // SAML
+  const [spEntityId, setSpEntityId] = useState("");
+  const [idpSsoUrl, setIdpSsoUrl] = useState("");
+  const [idpCert, setIdpCert] = useState("");
+
+  async function handleSubmit() {
+    onError(null);
+    if (!provider) return;
+    if (!email) {
+      onError("Admin email is required");
+      return;
+    }
+    if (provider === "local") {
+      if (password.length < 8) {
+        onError("Password must be at least 8 characters");
+        return;
+      }
+      if (password !== confirmPw) {
+        onError("Passwords do not match");
+        return;
+      }
+    }
+    onBusy(true);
+    try {
+      const jwtSecret = generateToken();
+      const body: Record<string, unknown> = {
+        primary_provider: provider,
+        jwt_secret: jwtSecret,
+        bootstrap_admin_email: email,
+      };
+      if (provider === "local") {
+        body.bootstrap_admin = { email, name: name || email, password };
+      } else if (provider === "google") {
+        body.google = { client_id: clientId, client_secret: clientSecret, redirect_uri: redirectUri };
+      } else if (provider === "m365") {
+        body.m365 = { client_id: clientId, client_secret: clientSecret, tenant_id: tenantId, redirect_uri: redirectUri };
+      } else if (provider === "sso_oidc") {
+        body.sso_oidc = { issuer_url: issuerUrl, client_id: clientId, client_secret: clientSecret, redirect_uri: redirectUri };
+      } else if (provider === "sso_saml") {
+        body.sso_saml = { sp_entity_id: spEntityId, idp_sso_url: idpSsoUrl, idp_cert: idpCert };
+      }
+      await onboardingPost<{ ok: boolean }>("/admin/api/onboarding/set_authy_config", body);
+      // For local provider, auto-login
+      if (provider === "local") {
+        try {
+          const loginRes = await onboardingPost<{ token: string }>("/admin/api/authy/login", {
+            email,
+            password,
+          });
+          if (loginRes.token) {
+            persistToken(loginRes.token);
+          }
+        } catch {
+          // login may fail during onboarding; that's ok, user will login after
+        }
+      }
+      onNext();
+    } catch (e) {
+      onError(e instanceof Error ? e.message : String(e));
+    } finally {
+      onBusy(false);
+    }
+  }
+
+  const providers: { key: AuthProvider; label: string; desc: string }[] = [
+    { key: "local", label: "Username / Password", desc: "Create local accounts with email and password" },
+    { key: "google", label: "Google", desc: "Sign in with Google OAuth" },
+    { key: "m365", label: "Microsoft 365", desc: "Sign in with Microsoft Entra ID" },
+    { key: "sso_oidc", label: "SSO (OIDC)", desc: "Generic OpenID Connect provider" },
+    { key: "sso_saml", label: "SSO (SAML)", desc: "SAML 2.0 identity provider" },
+  ];
+
+  return (
+    <div className="card space-y-6">
+      <div>
+        <h3 className="text-base font-semibold text-slate-100">Choose authentication method</h3>
+        <p className="mt-1 text-sm text-slate-400">
+          Select how administrators and users will sign in to MCPy.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        {providers.map((p) => (
+          <button
+            key={p.key}
+            className={
+              "rounded-lg border px-4 py-3 text-left transition " +
+              (provider === p.key
+                ? "border-accent-400 bg-accent-500/10"
+                : "border-surface-700 bg-surface-800 hover:border-surface-600")
+            }
+            onClick={() => setProvider(p.key)}
+          >
+            <div className="text-sm font-medium text-slate-100">{p.label}</div>
+            <div className="mt-0.5 text-xs text-slate-400">{p.desc}</div>
+          </button>
+        ))}
+      </div>
+
+      {provider && (
+        <div className="space-y-4 border-t border-surface-700 pt-4">
+          <div>
+            <label className="mb-1 block text-xs uppercase tracking-wider text-slate-400">
+              Admin email
+            </label>
+            <input type="email" className="input" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="admin@example.com" />
+          </div>
+
+          {provider === "local" && (
+            <>
+              <div>
+                <label className="mb-1 block text-xs uppercase tracking-wider text-slate-400">Name</label>
+                <input type="text" className="input" value={name} onChange={(e) => setName(e.target.value)} placeholder="Admin" />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs uppercase tracking-wider text-slate-400">Password</label>
+                <input type="password" className="input" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Min 8 characters" />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs uppercase tracking-wider text-slate-400">Confirm password</label>
+                <input type="password" className="input" value={confirmPw} onChange={(e) => setConfirmPw(e.target.value)} />
+              </div>
+            </>
+          )}
+
+          {(provider === "google" || provider === "m365" || provider === "sso_oidc") && (
+            <>
+              <div>
+                <label className="mb-1 block text-xs uppercase tracking-wider text-slate-400">Client ID</label>
+                <input type="text" className="input" value={clientId} onChange={(e) => setClientId(e.target.value)} />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs uppercase tracking-wider text-slate-400">Client secret</label>
+                <input type="password" className="input" value={clientSecret} onChange={(e) => setClientSecret(e.target.value)} />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs uppercase tracking-wider text-slate-400">Redirect URI</label>
+                <input type="text" className="input" value={redirectUri} onChange={(e) => setRedirectUri(e.target.value)} />
+              </div>
+            </>
+          )}
+
+          {provider === "m365" && (
+            <div>
+              <label className="mb-1 block text-xs uppercase tracking-wider text-slate-400">Tenant ID</label>
+              <input type="text" className="input" value={tenantId} onChange={(e) => setTenantId(e.target.value)} />
+            </div>
+          )}
+
+          {provider === "sso_oidc" && (
+            <div>
+              <label className="mb-1 block text-xs uppercase tracking-wider text-slate-400">Issuer URL</label>
+              <input type="url" className="input" value={issuerUrl} onChange={(e) => setIssuerUrl(e.target.value)} placeholder="https://idp.example.com" />
+            </div>
+          )}
+
+          {provider === "sso_saml" && (
+            <>
+              <div>
+                <label className="mb-1 block text-xs uppercase tracking-wider text-slate-400">SP Entity ID</label>
+                <input type="text" className="input" value={spEntityId} onChange={(e) => setSpEntityId(e.target.value)} />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs uppercase tracking-wider text-slate-400">IdP SSO URL</label>
+                <input type="url" className="input" value={idpSsoUrl} onChange={(e) => setIdpSsoUrl(e.target.value)} />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs uppercase tracking-wider text-slate-400">IdP Certificate (PEM)</label>
+                <textarea className="input h-24 font-mono text-xs" value={idpCert} onChange={(e) => setIdpCert(e.target.value)} />
+              </div>
+            </>
+          )}
+
+          <div className="flex justify-end">
+            <button className="btn btn-primary" onClick={handleSubmit} disabled={busy}>
+              {busy ? "Configuring..." : "Continue"}
+              {!busy && <ArrowRight className="h-4 w-4" />}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Step 3 (legacy) — Admin token
 // ---------------------------------------------------------------------------
 
 function TokenStep({

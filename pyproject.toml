@@ -43,6 +43,10 @@ dependencies = [
   # we don't force operators on the SQLite path to pull heavyweight
   # compiled drivers they don't need.
   "sqlalchemy>=2.0",
+  # Multi-provider authentication framework (local, Google, M365, SSO).
+  # Provides AuthManager + provider classes that MCPy's ``authn`` package
+  # wraps to handle admin sign-on and per-user identity.
+  "authy @ git+https://github.com/jej2k5/authy#subdirectory=python",
 ]
 
 [project.optional-dependencies]

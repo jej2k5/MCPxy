@@ -36,8 +36,12 @@ function authHeaders(): Record<string, string> {
 export async function apiGet<T>(path: string): Promise<T> {
   const res = await fetch(path, {
     headers: { Accept: "application/json", ...authHeaders() },
+    credentials: "include",
   });
   if (!res.ok) {
+    if (res.status === 401 && getToken()) {
+      setToken(null);
+    }
     throw new ApiError(res.status, await safeText(res));
   }
   return (await res.json()) as T;
@@ -51,9 +55,13 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
       Accept: "application/json",
       ...authHeaders(),
     },
+    credentials: "include",
     body: JSON.stringify(body ?? {}),
   });
   if (!res.ok) {
+    if (res.status === 401 && getToken()) {
+      setToken(null);
+    }
     throw new ApiError(res.status, await safeText(res));
   }
   return (await res.json()) as T;
@@ -63,11 +71,24 @@ export async function apiDelete<T>(path: string): Promise<T> {
   const res = await fetch(path, {
     method: "DELETE",
     headers: { Accept: "application/json", ...authHeaders() },
+    credentials: "include",
   });
   if (!res.ok) {
+    if (res.status === 401 && getToken()) {
+      setToken(null);
+    }
     throw new ApiError(res.status, await safeText(res));
   }
   return (await res.json()) as T;
+}
+
+export async function logout(): Promise<void> {
+  try {
+    await apiPost("/admin/api/authy/logout", {});
+  } catch {
+    // best effort
+  }
+  setToken(null);
 }
 
 async function safeText(res: Response): Promise<string> {

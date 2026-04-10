@@ -190,11 +190,46 @@ def run_migrations(engine: Engine) -> None:
                     "storage: initialised schema at version %d", CURRENT_SCHEMA_VERSION
                 )
             elif int(row[0]) < CURRENT_SCHEMA_VERSION:
-                # Future migration steps plug in here.
-                raise DatabaseError(
-                    f"database schema version {row[0]} is older than "
-                    f"{CURRENT_SCHEMA_VERSION}; no upgrade path is implemented"
-                )
+                stored = int(row[0])
+                if stored == 1:
+                    # v1 -> v2: adds users, user_invites,
+                    # personal_access_tokens, revoked_jwt_ids tables and
+                    # the bootstrap_admin_email column on onboarding.
+                    # create_all() already ran above, which handles the
+                    # new tables. We just stamp the new version.
+                    from sqlalchemy import update as sa_update
+
+                    from mcp_proxy.storage.schema import onboarding_table
+
+                    # Add the bootstrap_admin_email column if missing
+                    # (create_all won't add columns to existing tables).
+                    inspector = inspect(conn)
+                    existing_cols = {
+                        c["name"] for c in inspector.get_columns("onboarding")
+                    }
+                    if "bootstrap_admin_email" not in existing_cols:
+                        conn.execute(
+                            text(
+                                "ALTER TABLE onboarding "
+                                "ADD COLUMN bootstrap_admin_email VARCHAR(254)"
+                            )
+                        )
+
+                    conn.execute(
+                        sa_update(schema_meta_table)
+                        .where(schema_meta_table.c.version == stored)
+                        .values(version=CURRENT_SCHEMA_VERSION)
+                    )
+                    logger.info(
+                        "storage: migrated schema v%d -> v%d",
+                        stored,
+                        CURRENT_SCHEMA_VERSION,
+                    )
+                else:
+                    raise DatabaseError(
+                        f"database schema version {row[0]} is older than "
+                        f"{CURRENT_SCHEMA_VERSION}; no upgrade path is implemented"
+                    )
     except SQLAlchemyError as exc:
         raise DatabaseError(f"schema migration failed: {exc}") from exc
 
