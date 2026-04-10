@@ -181,6 +181,10 @@ class ProxyBridge:
             raise JsonRpcError(-32001, "upstream_unavailable", request_id=message.get("id"))
 
         try:
+            # Apply PII/PCI redaction to the outgoing request.
+            if self._policy_engine is not None:
+                self._policy_engine.redact_request(upstream_name, message)
+
             if self._shutdown_event.is_set():
                 record_error("proxy_shutting_down")
                 raise self._shutdown_error(message, upstream_name, "shutdown_reject_in_flight")
@@ -215,6 +219,10 @@ class ProxyBridge:
             if response is None:
                 record_error("upstream_unavailable")
                 raise JsonRpcError(-32001, "upstream_unavailable", request_id=message.get("id"))
+
+            # Apply PII/PCI redaction to the incoming response.
+            if self._policy_engine is not None and isinstance(response, dict):
+                self._policy_engine.redact_response(upstream_name, response)
 
             is_error = isinstance(response, dict) and "error" in response
             self._emit_record(
