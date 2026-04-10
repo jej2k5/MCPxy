@@ -1,4 +1,4 @@
-from mcp_proxy.config import redact_secrets
+from mcpxy_proxy.config import redact_secrets
 
 
 def test_admin_redaction_masks_secret_fields() -> None:

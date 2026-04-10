@@ -4,12 +4,12 @@ import os
 
 from fastapi.testclient import TestClient
 
-from mcp_proxy.config import AppConfig
-from mcp_proxy.proxy.bridge import ProxyBridge
-from mcp_proxy.proxy.manager import PluginRegistry, UpstreamManager
-from mcp_proxy.server import AppState, create_app
-from mcp_proxy.telemetry.noop_sink import NoopTelemetrySink
-from mcp_proxy.telemetry.pipeline import TelemetryPipeline
+from mcpxy_proxy.config import AppConfig
+from mcpxy_proxy.proxy.bridge import ProxyBridge
+from mcpxy_proxy.proxy.manager import PluginRegistry, UpstreamManager
+from mcpxy_proxy.server import AppState, create_app
+from mcpxy_proxy.telemetry.noop_sink import NoopTelemetrySink
+from mcpxy_proxy.telemetry.pipeline import TelemetryPipeline
 
 
 def _client() -> TestClient:
@@ -59,7 +59,7 @@ def test_install_snippet_for_claude_desktop_uses_stdio_adapter() -> None:
     assert body["client"] == "claude-desktop"
     assert body["supports_auto_install"] is True
     entry = body["entry"]
-    assert entry["command"] == "mcp-proxy"
+    assert entry["command"] == "mcpxy-proxy"
     assert entry["args"][0] == "stdio"
     assert "http://h:9000" in entry["args"]
 

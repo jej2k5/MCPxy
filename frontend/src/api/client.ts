@@ -1,4 +1,4 @@
-const TOKEN_KEY = "mcpy.admin.token";
+const TOKEN_KEY = "mcpxy.admin.token";
 
 export function getToken(): string | null {
   try {

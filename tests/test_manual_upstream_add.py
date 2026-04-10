@@ -22,7 +22,7 @@ import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from mcp_proxy.config import (
+from mcpxy_proxy.config import (
     AppConfig,
     BasicAuthConfig,
     BearerAuthConfig,
@@ -30,14 +30,14 @@ from mcp_proxy.config import (
     OAuth2AuthConfig,
     StdioUpstreamConfig,
 )
-from mcp_proxy.plugins.registry import PluginRegistry
-from mcp_proxy.proxy.bridge import ProxyBridge
-from mcp_proxy.proxy.manager import UpstreamManager
-from mcp_proxy.secrets import SecretsManager
-from mcp_proxy.server import AppState, create_app
-from mcp_proxy.storage.config_store import open_store
-from mcp_proxy.telemetry.noop_sink import NoopTelemetrySink
-from mcp_proxy.telemetry.pipeline import TelemetryPipeline
+from mcpxy_proxy.plugins.registry import PluginRegistry
+from mcpxy_proxy.proxy.bridge import ProxyBridge
+from mcpxy_proxy.proxy.manager import UpstreamManager
+from mcpxy_proxy.secrets import SecretsManager
+from mcpxy_proxy.server import AppState, create_app
+from mcpxy_proxy.storage.config_store import open_store
+from mcpxy_proxy.telemetry.noop_sink import NoopTelemetrySink
+from mcpxy_proxy.telemetry.pipeline import TelemetryPipeline
 
 
 HEADERS = {"Authorization": "Bearer test-admin-token"}
@@ -53,7 +53,7 @@ def _build_client(tmp_path: Path) -> tuple[TestClient, AppState]:
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     fernet = Fernet(Fernet.generate_key())
-    store = open_store(f"sqlite:///{state_dir / 'mcpy.db'}", fernet=fernet)
+    store = open_store(f"sqlite:///{state_dir / 'mcpxy.db'}", fernet=fernet)
 
     raw: dict[str, Any] = {
         "auth": {"token": "test-admin-token", "token_env": None},
@@ -183,7 +183,7 @@ def test_manual_add_http_with_static_headers(tmp_path: Path) -> None:
                 "config": {
                     "type": "http",
                     "url": "https://api.example.com/mcp",
-                    "headers": {"X-Workspace-Id": "wk_42", "User-Agent": "mcpy-test/1"},
+                    "headers": {"X-Workspace-Id": "wk_42", "User-Agent": "mcpxy-test/1"},
                     "timeout_s": 60,
                 },
                 "replace": False,
@@ -192,7 +192,7 @@ def test_manual_add_http_with_static_headers(tmp_path: Path) -> None:
         live = state.runtime_config.config.upstreams["remote"]
         assert isinstance(live, HttpUpstreamConfig)
         assert live.headers["X-Workspace-Id"] == "wk_42"
-        assert live.headers["User-Agent"] == "mcpy-test/1"
+        assert live.headers["User-Agent"] == "mcpxy-test/1"
         assert live.timeout_s == 60
 
 

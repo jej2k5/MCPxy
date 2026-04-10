@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
-import mcp_proxy.plugins.registry as registry_mod
-from mcp_proxy.plugins.registry import PluginRegistry
+import mcpxy_proxy.plugins.registry as registry_mod
+from mcpxy_proxy.plugins.registry import PluginRegistry
 
 
 class DummyUpstream:
@@ -11,9 +11,9 @@ class DummyUpstream:
 
 def test_plugin_discovery(monkeypatch) -> None:
     def fake_entry_points(group: str):
-        if group == "mcp_proxy.upstreams":
+        if group == "mcpxy_proxy.upstreams":
             return [SimpleNamespace(name="dummy", value="pkg:DummyUpstream", load=lambda: DummyUpstream)]
-        if group == "mcp_proxy.telemetry_sinks":
+        if group == "mcpxy_proxy.telemetry_sinks":
             return [SimpleNamespace(name="sink", value="pkg:Sink", load=lambda: dict)]
         return []
 
@@ -26,7 +26,7 @@ def test_plugin_discovery(monkeypatch) -> None:
 
 def test_duplicate_key_rejected_for_entry_point(monkeypatch) -> None:
     def fake_entry_points(group: str):
-        if group == "mcp_proxy.upstreams":
+        if group == "mcpxy_proxy.upstreams":
             return [SimpleNamespace(name="stdio", value="pkg:AltStdio", load=lambda: DummyUpstream)]
         return []
 

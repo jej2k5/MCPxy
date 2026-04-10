@@ -7,18 +7,18 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
-from mcp_proxy.config import AppConfig
-from mcp_proxy.discovery.registration import (
+from mcpxy_proxy.config import AppConfig
+from mcpxy_proxy.discovery.registration import (
     FileDropWatcher,
     RegistrationError,
     RegistrationService,
 )
-from mcp_proxy.plugins.registry import PluginRegistry
-from mcp_proxy.policy.engine import PolicyEngine
-from mcp_proxy.proxy.manager import UpstreamManager
-from mcp_proxy.runtime import RuntimeConfigManager
-from mcp_proxy.telemetry.noop_sink import NoopTelemetrySink
-from mcp_proxy.telemetry.pipeline import TelemetryPipeline
+from mcpxy_proxy.plugins.registry import PluginRegistry
+from mcpxy_proxy.policy.engine import PolicyEngine
+from mcpxy_proxy.proxy.manager import UpstreamManager
+from mcpxy_proxy.runtime import RuntimeConfigManager
+from mcpxy_proxy.telemetry.noop_sink import NoopTelemetrySink
+from mcpxy_proxy.telemetry.pipeline import TelemetryPipeline
 
 
 @pytest_asyncio.fixture

@@ -13,7 +13,7 @@ import type {
  *
  * Lets operators register an arbitrary stdio or http upstream without
  * going through the catalog. Posts to ``/admin/api/upstreams`` — the
- * same endpoint the CLI ``mcp-proxy register`` and the catalog
+ * same endpoint the CLI ``mcpxy-proxy register`` and the catalog
  * installer use, so it routes through the runtime apply pipeline and
  * inherits ${secret:NAME} expansion + atomic rollback for free.
  *

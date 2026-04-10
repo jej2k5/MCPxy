@@ -8,7 +8,7 @@ from pathlib import Path
 from cryptography import x509
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-from mcp_proxy.tls import ensure_dev_cert
+from mcpxy_proxy.tls import ensure_dev_cert
 
 
 def test_ensure_dev_cert_generates_cert_and_key(tmp_path: Path) -> None:
@@ -45,7 +45,7 @@ def test_ensure_dev_cert_has_localhost_san(tmp_path: Path) -> None:
     cn = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
     assert cn == "localhost"
 
-    # SAN covers the loopback hostnames / IPs MCPy actually binds to.
+    # SAN covers the loopback hostnames / IPs MCPxy actually binds to.
     san = cert.extensions.get_extension_for_class(
         x509.SubjectAlternativeName
     ).value

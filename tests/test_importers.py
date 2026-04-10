@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from mcp_proxy.discovery.importers import (
+from mcpxy_proxy.discovery.importers import (
     ClaudeCodeImporter,
     ClaudeDesktopImporter,
     ContinueImporter,
@@ -148,19 +148,19 @@ def test_discover_all_covers_every_known_client(tmp_path: Path) -> None:
     # depending on the host filesystem.
     missing = tmp_path / "nothing.json"
     with patch(
-        "mcp_proxy.discovery.importers.ClaudeDesktopImporter.candidate_paths",
+        "mcpxy_proxy.discovery.importers.ClaudeDesktopImporter.candidate_paths",
         return_value=[missing],
     ), patch(
-        "mcp_proxy.discovery.importers.ClaudeCodeImporter.candidate_paths",
+        "mcpxy_proxy.discovery.importers.ClaudeCodeImporter.candidate_paths",
         return_value=[missing],
     ), patch(
-        "mcp_proxy.discovery.importers.CursorImporter.candidate_paths",
+        "mcpxy_proxy.discovery.importers.CursorImporter.candidate_paths",
         return_value=[missing],
     ), patch(
-        "mcp_proxy.discovery.importers.WindsurfImporter.candidate_paths",
+        "mcpxy_proxy.discovery.importers.WindsurfImporter.candidate_paths",
         return_value=[missing],
     ), patch(
-        "mcp_proxy.discovery.importers.ContinueImporter.candidate_paths",
+        "mcpxy_proxy.discovery.importers.ContinueImporter.candidate_paths",
         return_value=[missing],
     ):
         result = discover_all()

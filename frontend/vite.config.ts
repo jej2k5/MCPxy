@@ -2,13 +2,13 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import path from "node:path";
 
-// Builds the MCPy admin dashboard into the Python package's web/dist folder
-// so it ships with `pip install mcpy-proxy` and is served from /admin.
+// Builds the MCPxy admin dashboard into the Python package's web/dist folder
+// so it ships with `pip install mcpxy-proxy` and is served from /admin.
 export default defineConfig({
   plugins: [react()],
   base: "/admin/static/dist/",
   build: {
-    outDir: path.resolve(__dirname, "../src/mcp_proxy/web/dist"),
+    outDir: path.resolve(__dirname, "../src/mcpxy_proxy/web/dist"),
     emptyOutDir: true,
     assetsDir: "assets",
     sourcemap: false,

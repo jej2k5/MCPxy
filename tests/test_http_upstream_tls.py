@@ -15,7 +15,7 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from mcp_proxy.config import (
+from mcpxy_proxy.config import (
     AppConfig,
     HttpUpstreamConfig,
     HttpUpstreamTlsConfig,
@@ -23,7 +23,7 @@ from mcp_proxy.config import (
     load_config,
     redact_secrets,
 )
-from mcp_proxy.proxy.http import HttpUpstreamTransport
+from mcpxy_proxy.proxy.http import HttpUpstreamTransport
 
 
 # ---------------------------------------------------------------------------
@@ -44,26 +44,26 @@ def test_http_upstream_config_accepts_tls_block() -> None:
         type="http",
         url="https://upstream.example/mcp",
         tls={
-            "verify": "/etc/mcpy/upstream-ca.pem",
-            "client_cert": "/etc/mcpy/client.pem",
-            "client_key": "/etc/mcpy/client.key",
+            "verify": "/etc/mcpxy/upstream-ca.pem",
+            "client_cert": "/etc/mcpxy/client.pem",
+            "client_key": "/etc/mcpxy/client.key",
         },
     )
     assert cfg.tls is not None
-    assert cfg.tls.verify == "/etc/mcpy/upstream-ca.pem"
-    assert cfg.tls.client_cert == "/etc/mcpy/client.pem"
-    assert cfg.tls.client_key == "/etc/mcpy/client.key"
+    assert cfg.tls.verify == "/etc/mcpxy/upstream-ca.pem"
+    assert cfg.tls.client_cert == "/etc/mcpxy/client.pem"
+    assert cfg.tls.client_key == "/etc/mcpxy/client.key"
 
 
 def test_http_upstream_tls_client_key_requires_client_cert() -> None:
     with pytest.raises(ValidationError):
-        HttpUpstreamTlsConfig(client_key="/etc/mcpy/client.key")
+        HttpUpstreamTlsConfig(client_key="/etc/mcpxy/client.key")
 
 
 def test_http_upstream_tls_password_requires_client_key() -> None:
     with pytest.raises(ValidationError):
         HttpUpstreamTlsConfig(
-            client_cert="/etc/mcpy/client.pem",
+            client_cert="/etc/mcpxy/client.pem",
             client_key_password="hunter2",
         )
 
@@ -91,8 +91,8 @@ def test_http_upstream_tls_client_key_password_env_expansion(
                         "type": "http",
                         "url": "https://upstream.example/mcp",
                         "tls": {
-                            "client_cert": "/etc/mcpy/client.pem",
-                            "client_key": "/etc/mcpy/client.key",
+                            "client_cert": "/etc/mcpxy/client.pem",
+                            "client_key": "/etc/mcpxy/client.key",
                             "client_key_password": "${env:UPSTREAM_KEY_PW}",
                         },
                     }
@@ -112,8 +112,8 @@ def test_http_upstream_tls_client_key_password_secret_expansion() -> None:
                 "type": "http",
                 "url": "https://upstream.example/mcp",
                 "tls": {
-                    "client_cert": "/etc/mcpy/client.pem",
-                    "client_key": "/etc/mcpy/client.key",
+                    "client_cert": "/etc/mcpxy/client.pem",
+                    "client_key": "/etc/mcpxy/client.key",
                     "client_key_password": "${secret:UPSTREAM_KEY_PW}",
                 },
             }
@@ -135,8 +135,8 @@ def test_redact_secrets_masks_upstream_client_key_password() -> None:
                 "type": "http",
                 "url": "https://upstream.example/mcp",
                 "tls": {
-                    "client_cert": "/etc/mcpy/client.pem",
-                    "client_key": "/etc/mcpy/client.key",
+                    "client_cert": "/etc/mcpxy/client.pem",
+                    "client_key": "/etc/mcpxy/client.key",
                     "client_key_password": "hunter2",
                 },
             }
@@ -146,8 +146,8 @@ def test_redact_secrets_masks_upstream_client_key_password() -> None:
     tls = redacted["upstreams"]["remote"]["tls"]
     assert tls["client_key_password"] == "***REDACTED***"
     # Non-secret fields stay visible.
-    assert tls["client_cert"] == "/etc/mcpy/client.pem"
-    assert tls["client_key"] == "/etc/mcpy/client.key"
+    assert tls["client_cert"] == "/etc/mcpxy/client.pem"
+    assert tls["client_key"] == "/etc/mcpxy/client.key"
     # Original payload is untouched.
     assert payload["upstreams"]["remote"]["tls"]["client_key_password"] == "hunter2"
 
@@ -177,7 +177,7 @@ class _AsyncClientSpy:
 @pytest.fixture()
 def httpx_client_spy(monkeypatch: pytest.MonkeyPatch) -> type[_AsyncClientSpy]:
     _AsyncClientSpy.last_kwargs = {}
-    monkeypatch.setattr("mcp_proxy.proxy.http.httpx.AsyncClient", _AsyncClientSpy)
+    monkeypatch.setattr("mcpxy_proxy.proxy.http.httpx.AsyncClient", _AsyncClientSpy)
     return _AsyncClientSpy
 
 

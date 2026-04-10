@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from mcp_proxy.storage.bootstrap import (
+from mcpxy_proxy.storage.bootstrap import (
     BOOTSTRAP_FILENAME,
     BootstrapConfig,
     BootstrapError,
@@ -26,7 +26,7 @@ from mcp_proxy.storage.bootstrap import (
     load_bootstrap,
     write_bootstrap,
 )
-from mcp_proxy.storage.db import (
+from mcpxy_proxy.storage.db import (
     DEFAULT_SQLITE_FILENAME,
     DatabaseError,
     _assemble_url_from_parts,
@@ -102,7 +102,7 @@ def test_clear_bootstrap_removes_file(tmp_path: Path) -> None:
 def test_resolve_url_explicit_arg_wins_over_env_and_bootstrap(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("MCPY_DB_URL", "sqlite:////from-env.db")
+    monkeypatch.setenv("MCPXY_DB_URL", "sqlite:////from-env.db")
     write_bootstrap(tmp_path, BootstrapConfig(db_url="sqlite:////from-bootstrap.db"))
     assert (
         resolve_database_url("sqlite:////explicit.db", state_dir=tmp_path)
@@ -113,7 +113,7 @@ def test_resolve_url_explicit_arg_wins_over_env_and_bootstrap(
 def test_resolve_url_env_wins_over_bootstrap(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("MCPY_DB_URL", "sqlite:////from-env.db")
+    monkeypatch.setenv("MCPXY_DB_URL", "sqlite:////from-env.db")
     write_bootstrap(tmp_path, BootstrapConfig(db_url="sqlite:////from-bootstrap.db"))
     assert resolve_database_url(None, state_dir=tmp_path) == "sqlite:////from-env.db"
 
@@ -121,7 +121,7 @@ def test_resolve_url_env_wins_over_bootstrap(
 def test_resolve_url_bootstrap_wins_over_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("MCPY_DB_URL", raising=False)
+    monkeypatch.delenv("MCPXY_DB_URL", raising=False)
     write_bootstrap(tmp_path, BootstrapConfig(db_url="sqlite:////from-bootstrap.db"))
     assert (
         resolve_database_url(None, state_dir=tmp_path)
@@ -132,7 +132,7 @@ def test_resolve_url_bootstrap_wins_over_default(
 def test_resolve_url_falls_through_to_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("MCPY_DB_URL", raising=False)
+    monkeypatch.delenv("MCPXY_DB_URL", raising=False)
     url = resolve_database_url(None, state_dir=tmp_path)
     assert url.endswith(f"{tmp_path / DEFAULT_SQLITE_FILENAME}")
 
@@ -140,8 +140,8 @@ def test_resolve_url_falls_through_to_default(
 def test_resolve_url_empty_env_falls_through(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Docker Compose expands ``${MCPY_DB_URL:-}`` to empty strings."""
-    monkeypatch.setenv("MCPY_DB_URL", "")
+    """Docker Compose expands ``${MCPXY_DB_URL:-}`` to empty strings."""
+    monkeypatch.setenv("MCPXY_DB_URL", "")
     write_bootstrap(tmp_path, BootstrapConfig(db_url="sqlite:////from-bootstrap.db"))
     assert (
         resolve_database_url(None, state_dir=tmp_path)
@@ -152,7 +152,7 @@ def test_resolve_url_empty_env_falls_through(
 def test_resolve_url_propagates_bootstrap_parse_errors(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("MCPY_DB_URL", raising=False)
+    monkeypatch.delenv("MCPXY_DB_URL", raising=False)
     (tmp_path / BOOTSTRAP_FILENAME).write_text("{not-json", encoding="utf-8")
     with pytest.raises(BootstrapError):
         resolve_database_url(None, state_dir=tmp_path)
@@ -164,16 +164,16 @@ def test_resolve_url_propagates_bootstrap_parse_errors(
 
 
 def test_sanitize_url_masks_password() -> None:
-    out = sanitize_url("postgresql://alice:hunter2@host:5432/mcpy")
+    out = sanitize_url("postgresql://alice:hunter2@host:5432/mcpxy")
     assert "hunter2" not in out
     assert "alice" in out
     assert "host" in out
-    assert "mcpy" in out
+    assert "mcpxy" in out
 
 
 def test_sanitize_url_leaves_passwordless_urls_alone() -> None:
-    out = sanitize_url("sqlite:///var/lib/mcpy/mcpy.db")
-    assert out == "sqlite:///var/lib/mcpy/mcpy.db"
+    out = sanitize_url("sqlite:///var/lib/mcpxy/mcpxy.db")
+    assert out == "sqlite:///var/lib/mcpxy/mcpxy.db"
 
 
 def test_sanitize_url_handles_garbage() -> None:
@@ -247,7 +247,7 @@ def test_assemble_url_escapes_special_chars_in_password() -> None:
         dialect="postgresql",
         host="h.example",
         port=5432,
-        database="mcpy",
+        database="mcpxy",
         user="svc",
         password="p@ss:w/rd",
     )
@@ -257,7 +257,7 @@ def test_assemble_url_escapes_special_chars_in_password() -> None:
     parsed = make_url(url)
     assert parsed.password == "p@ss:w/rd"
     assert parsed.host == "h.example"
-    assert parsed.database == "mcpy"
+    assert parsed.database == "mcpxy"
     assert parsed.port == 5432
 
 
@@ -268,7 +268,7 @@ def test_assemble_url_attaches_query_args() -> None:
         dialect="postgresql",
         host="h",
         port=5432,
-        database="mcpy",
+        database="mcpxy",
         user="u",
         password="p",
         query={"sslmode": "require"},

@@ -12,13 +12,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from cryptography.fernet import Fernet
 
-from mcp_proxy.config import (
+from mcpxy_proxy.config import (
     HttpUpstreamConfig,
     TokenTransformConfig,
 )
-from mcp_proxy.proxy.bridge import RequestContext
-from mcp_proxy.proxy.http import HttpUpstreamTransport
-from mcp_proxy.storage.config_store import open_store
+from mcpxy_proxy.proxy.bridge import RequestContext
+from mcpxy_proxy.proxy.http import HttpUpstreamTransport
+from mcpxy_proxy.storage.config_store import open_store
 
 
 # ---------------------------------------------------------------------------

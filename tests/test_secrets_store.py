@@ -16,14 +16,14 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from mcp_proxy.config import (
+from mcpxy_proxy.config import (
     SECRET_RE,
     _apply_expansions,
     find_secret_references,
     load_config,
     validate_config_payload,
 )
-from mcp_proxy.secrets import (
+from mcpxy_proxy.secrets import (
     SECRET_NAME_RE,
     SecretNotFoundError,
     SecretStoreError,
@@ -138,13 +138,13 @@ async def test_secrets_db_row_is_actually_ciphertext(tmp_path: Path) -> None:
     Fernet (the token starts with 0x80 → ``gAAAAA`` in base64).
     """
     from sqlalchemy import select
-    from mcp_proxy.storage.schema import secrets_table
+    from mcpxy_proxy.storage.schema import secrets_table
 
     store = SecretsManager(state_dir=tmp_path, key_override=SecretsManager.generate_key())
     await store.set("nuclear", "launch-code-4782")
 
     # The whole on-disk SQLite file must not contain the plaintext.
-    db_path = tmp_path / "mcpy.db"
+    db_path = tmp_path / "mcpxy.db"
     raw = db_path.read_bytes()
     assert b"launch-code-4782" not in raw
 
@@ -163,7 +163,7 @@ async def test_auto_generated_key_persists(tmp_path: Path, monkeypatch: pytest.M
     # No override, no env var: the manager should auto-generate a key and
     # write it to <state_dir>/secrets.key. A subsequent instantiation
     # should pick up the same key and read the existing store.
-    monkeypatch.delenv("MCPY_SECRETS_KEY", raising=False)
+    monkeypatch.delenv("MCPXY_SECRETS_KEY", raising=False)
     store = SecretsManager(state_dir=tmp_path)
     key_file = tmp_path / "secrets.key"
     assert key_file.exists()
@@ -176,14 +176,14 @@ async def test_auto_generated_key_persists(tmp_path: Path, monkeypatch: pytest.M
 
 @pytest.mark.asyncio
 async def test_env_key_preferred_over_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """When ``MCPY_SECRETS_KEY`` is set, the file fallback path must NOT
+    """When ``MCPXY_SECRETS_KEY`` is set, the file fallback path must NOT
     be touched. We assert that no ``secrets.key`` file is written and
     that constructing a fresh manager with a *different* env key against
     the same DB file raises (because the existing rows decrypt with the
     original key only).
     """
     env_key = SecretsManager.generate_key()
-    monkeypatch.setenv("MCPY_SECRETS_KEY", env_key)
+    monkeypatch.setenv("MCPXY_SECRETS_KEY", env_key)
     store = SecretsManager(state_dir=tmp_path)
     assert not (tmp_path / "secrets.key").exists()
     await store.set("x", "y")
@@ -191,7 +191,7 @@ async def test_env_key_preferred_over_file(tmp_path: Path, monkeypatch: pytest.M
 
     # A fresh manager with a different env key against the same DB file
     # should fail to decrypt the existing row.
-    monkeypatch.setenv("MCPY_SECRETS_KEY", SecretsManager.generate_key())
+    monkeypatch.setenv("MCPXY_SECRETS_KEY", SecretsManager.generate_key())
     with pytest.raises(SecretStoreError):
         SecretsManager(state_dir=tmp_path)
 
@@ -295,13 +295,13 @@ def test_validate_config_payload_with_secret_resolver() -> None:
 
 def _build_app_with_secrets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     """Minimal AppState + FastAPI app for CRUD + apply testing."""
-    from mcp_proxy.config import AppConfig
-    from mcp_proxy.plugins.registry import PluginRegistry
-    from mcp_proxy.proxy.bridge import ProxyBridge
-    from mcp_proxy.proxy.manager import UpstreamManager
-    from mcp_proxy.server import AppState, create_app
-    from mcp_proxy.telemetry.pipeline import TelemetryPipeline
-    from mcp_proxy.telemetry.noop_sink import NoopTelemetrySink
+    from mcpxy_proxy.config import AppConfig
+    from mcpxy_proxy.plugins.registry import PluginRegistry
+    from mcpxy_proxy.proxy.bridge import ProxyBridge
+    from mcpxy_proxy.proxy.manager import UpstreamManager
+    from mcpxy_proxy.server import AppState, create_app
+    from mcpxy_proxy.telemetry.pipeline import TelemetryPipeline
+    from mcpxy_proxy.telemetry.noop_sink import NoopTelemetrySink
 
     monkeypatch.setenv("MCP_PROXY_TOKEN", "admin-test-token")
     raw = {

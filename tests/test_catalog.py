@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from mcp_proxy.discovery.catalog import (
+from mcpxy_proxy.discovery.catalog import (
     CATALOG_PATH,
     Catalog,
     CatalogEntry,
@@ -49,7 +49,7 @@ def test_catalog_get_by_id() -> None:
     assert catalog.get("definitely-not-a-real-id") is None
 
 
-def test_materialize_substitutes_variables_and_returns_mcpy_config() -> None:
+def test_materialize_substitutes_variables_and_returns_mcpxy_config() -> None:
     entry = CatalogEntry(
         id="demo",
         name="Demo",

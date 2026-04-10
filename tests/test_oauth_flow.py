@@ -1,4 +1,4 @@
-"""OAuth 2.1 end-to-end tests for MCPy's auth layer.
+"""OAuth 2.1 end-to-end tests for MCPxy's auth layer.
 
 We spin up a fully-featured mock OAuth 2.1 authorization server
 inside an in-memory httpx.MockTransport so the tests cover:
@@ -29,15 +29,15 @@ from urllib.parse import parse_qs, urlparse
 import httpx
 import pytest
 
-from mcp_proxy.auth.oauth import (
+from mcpxy_proxy.auth.oauth import (
     OAuthError,
     OAuthHttpxAuth,
     OAuthManager,
     OAuthNotAuthorizedError,
     TokenSet,
 )
-from mcp_proxy.config import OAuth2AuthConfig
-from mcp_proxy.secrets import SecretsManager
+from mcpxy_proxy.config import OAuth2AuthConfig
+from mcpxy_proxy.secrets import SecretsManager
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +49,7 @@ from mcp_proxy.secrets import SecretsManager
 class MockAuthServer:
     """Tiny RFC 6749 / 7636 / 7591 / 8414 authorization server.
 
-    Supports the subset MCPy exercises: discovery, dynamic client
+    Supports the subset MCPxy exercises: discovery, dynamic client
     registration, authorization_code + PKCE grant, refresh_token grant.
     Generates new tokens with configurable TTL and optionally rotates
     refresh tokens on refresh.
@@ -109,7 +109,7 @@ class MockAuthServer:
         state: str,
         code_challenge: str,
     ) -> str:
-        """Not called over HTTP in these tests — the MCPy manager just
+        """Not called over HTTP in these tests — the MCPxy manager just
         builds the URL. Instead the test harness calls this directly to
         simulate the user approving the consent screen and the auth
         server issuing a code."""

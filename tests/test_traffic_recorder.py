@@ -3,7 +3,7 @@ import time
 
 import pytest
 
-from mcp_proxy.observability.traffic import TrafficRecord, TrafficRecorder
+from mcpxy_proxy.observability.traffic import TrafficRecord, TrafficRecorder
 
 
 def _rec(

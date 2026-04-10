@@ -3,7 +3,7 @@ requires = ["setuptools>=69", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mcpy-proxy"
+name = "mcpxy-proxy"
 version = "0.1.0"
 description = "Production-ready multi-upstream MCP proxy with admin MCP interface and telemetry pipeline."
 readme = "README.md"
@@ -28,23 +28,23 @@ dependencies = [
   "httpx>=0.27.0",
   "pydantic>=2.6.0",
   # Fernet-backed encryption for the first-class secrets store
-  # (src/mcp_proxy/secrets.py) used for upstream credentials and
+  # (src/mcpxy_proxy/secrets.py) used for upstream credentials and
   # OAuth tokens at rest.
   "cryptography>=42.0",
   # Persistent config + secrets store. SQLAlchemy Core (no ORM) gives us
-  # a database-agnostic surface so operators can point MCPY_DB_URL at
+  # a database-agnostic surface so operators can point MCPXY_DB_URL at
   # any SQLAlchemy-supported backend — or configure it from the
   # onboarding wizard, which writes <state_dir>/bootstrap.json that
   # ``cli.build_state`` reads before opening the engine.
   #
-  # The default sqlite:///<state_dir>/mcpy.db uses the stdlib sqlite3
+  # The default sqlite:///<state_dir>/mcpxy.db uses the stdlib sqlite3
   # driver and always works out of the box. Postgres and MySQL live
   # behind the ``[postgres]`` / ``[mysql]`` optional extras below so
   # we don't force operators on the SQLite path to pull heavyweight
   # compiled drivers they don't need.
   "sqlalchemy>=2.0",
   # Multi-provider authentication framework (local, Google, M365, SSO).
-  # Provides AuthManager + provider classes that MCPy's ``authn`` package
+  # Provides AuthManager + provider classes that MCPxy's ``authn`` package
   # wraps to handle admin sign-on and per-user identity.
   "authy @ git+https://github.com/jej2k5/authy#subdirectory=python",
 ]
@@ -56,9 +56,9 @@ dev = [
   "ruff>=0.4.0",
   "mypy>=1.8.0",
 ]
-# Installing ``mcpy-proxy[postgres]`` makes the onboarding wizard
+# Installing ``mcpxy-proxy[postgres]`` makes the onboarding wizard
 # offer "PostgreSQL" as a backend option — the driver probe in
-# ``mcp_proxy.storage.db.available_dialects`` looks for ``psycopg2``.
+# ``mcpxy_proxy.storage.db.available_dialects`` looks for ``psycopg2``.
 postgres = [
   "psycopg2-binary>=2.9",
 ]
@@ -68,16 +68,16 @@ mysql = [
 ]
 
 [project.scripts]
-# CLI usage: mcp-proxy serve --config <path> --listen <host:port>
-mcp-proxy = "mcp_proxy.cli:main"
+# CLI usage: mcpxy-proxy serve --config <path> --listen <host:port>
+mcpxy-proxy = "mcpxy_proxy.cli:main"
 
-[project.entry-points."mcp_proxy.upstreams"]
-stdio = "mcp_proxy.proxy.stdio:StdioUpstreamTransport"
-http = "mcp_proxy.proxy.http:HttpUpstreamTransport"
+[project.entry-points."mcpxy_proxy.upstreams"]
+stdio = "mcpxy_proxy.proxy.stdio:StdioUpstreamTransport"
+http = "mcpxy_proxy.proxy.http:HttpUpstreamTransport"
 
-[project.entry-points."mcp_proxy.telemetry_sinks"]
-http = "mcp_proxy.telemetry.http_sink:HttpTelemetrySink"
-noop = "mcp_proxy.telemetry.noop_sink:NoopTelemetrySink"
+[project.entry-points."mcpxy_proxy.telemetry_sinks"]
+http = "mcpxy_proxy.telemetry.http_sink:HttpTelemetrySink"
+noop = "mcpxy_proxy.telemetry.noop_sink:NoopTelemetrySink"
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
@@ -91,7 +91,7 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-mcp_proxy = [
+mcpxy_proxy = [
   "web/templates/*.html",
   "web/static/*",
   "web/dist/*",

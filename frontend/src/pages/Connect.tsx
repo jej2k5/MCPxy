@@ -9,7 +9,7 @@ const CLIENTS = [
     id: "claude-desktop",
     label: "Claude Desktop",
     blurb:
-      "Claude Desktop only supports stdio MCP servers. The install command registers `mcp-proxy stdio --connect URL` so the desktop app can talk to your running MCPy proxy.",
+      "Claude Desktop only supports stdio MCP servers. The install command registers `mcpxy-proxy stdio --connect URL` so the desktop app can talk to your running MCPxy proxy.",
   },
   {
     id: "claude-code",
@@ -71,7 +71,7 @@ export default function Connect() {
 
   const installCommand = useMemo(() => {
     const parts = [
-      "mcp-proxy install",
+      "mcpxy-proxy install",
       `--client ${tab}`,
       `--url ${JSON.stringify(url)}`,
     ];
@@ -96,7 +96,7 @@ export default function Connect() {
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div>
             <label className="mb-1 block text-xs uppercase tracking-wider text-slate-400">
-              MCPy URL
+              MCPxy URL
             </label>
             <input className="input" value={url} onChange={(e) => setUrl(e.target.value)} />
           </div>

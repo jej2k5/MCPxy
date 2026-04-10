@@ -1,15 +1,15 @@
 # syntax=docker/dockerfile:1.6
 #
-# MCPy container image.
+# MCPxy container image.
 #
 # Stage 1 builds the React dashboard with Node and emits static assets into
-# the Python package tree (vite.config.ts writes to ../src/mcp_proxy/web/dist).
+# the Python package tree (vite.config.ts writes to ../src/mcpxy_proxy/web/dist).
 # Stage 2 is an ubuntu:24.04 runtime that installs the proxy package, the
 # built dashboard, plus `node`/`npm`/`uv` so stdio upstreams that shell out
 # to `npx`/`uvx` (the vast majority of the bundled catalog) work out of the
 # box.
 #
-# The desktop install helpers (`mcp-proxy install ...`) are intentionally
+# The desktop install helpers (`mcpxy-proxy install ...`) are intentionally
 # *not* run from the container: they write to host client config files
 # (Claude Desktop, Cursor, Continue, ...) and must execute on the host. The
 # container exposes the proxy on :8000 so host-side installers can wire
@@ -33,7 +33,7 @@ RUN npm install --no-audit --no-fund --include=dev
 # directly (rather than `npm run build`) so the in-package `tsc --noEmit`
 # type check is not a hard dependency of the image build — type checking
 # is a CI concern, not a deployment concern.  vite.config.ts writes the
-# output to /build/src/mcp_proxy/web/dist, which is where stage 2 looks
+# output to /build/src/mcpxy_proxy/web/dist, which is where stage 2 looks
 # for it.
 COPY frontend/ ./
 RUN npx vite build
@@ -54,9 +54,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PATH="/opt/mcpy/.venv/bin:$PATH" \
-    MCPY_CONFIG=/etc/mcpy/config.json \
-    MCPY_LISTEN=0.0.0.0:8000
+    PATH="/opt/mcpxy/.venv/bin:$PATH" \
+    MCPXY_CONFIG=/etc/mcpxy/config.json \
+    MCPXY_LISTEN=0.0.0.0:8000
 
 # System deps:
 #   ca-certificates + curl    — TLS trust store + /health curl in the
@@ -79,13 +79,13 @@ RUN apt-get update \
         python3-venv \
     && rm -rf /var/lib/apt/lists/*
 
-# Dedicated venv at /opt/mcpy/.venv. `uv` drives `uvx`, which a number of
+# Dedicated venv at /opt/mcpxy/.venv. `uv` drives `uvx`, which a number of
 # catalog entries rely on, so we seed it into the same venv.
-RUN python3 -m venv /opt/mcpy/.venv \
-    && /opt/mcpy/.venv/bin/pip install --no-cache-dir --upgrade pip \
-    && /opt/mcpy/.venv/bin/pip install --no-cache-dir uv
+RUN python3 -m venv /opt/mcpxy/.venv \
+    && /opt/mcpxy/.venv/bin/pip install --no-cache-dir --upgrade pip \
+    && /opt/mcpxy/.venv/bin/pip install --no-cache-dir uv
 
-WORKDIR /opt/mcpy
+WORKDIR /opt/mcpxy
 
 # Copy only what `pip install .` needs. README.md is referenced by
 # pyproject.toml (`readme = "README.md"`) so the build fails without it.
@@ -94,32 +94,32 @@ COPY src/ ./src/
 
 # Pull the built dashboard from the frontend stage into the package tree so
 # setuptools' `package-data` glob (`web/dist/**/*`) picks it up.
-COPY --from=frontend /build/src/mcp_proxy/web/dist/ ./src/mcp_proxy/web/dist/
+COPY --from=frontend /build/src/mcpxy_proxy/web/dist/ ./src/mcpxy_proxy/web/dist/
 
-RUN /opt/mcpy/.venv/bin/pip install --no-cache-dir .
+RUN /opt/mcpxy/.venv/bin/pip install --no-cache-dir .
 
 # The config path and listen address are parameterised via env so operators
 # can override without rebuilding; the entrypoint script below reads them.
-COPY deploy/docker/entrypoint.sh /usr/local/bin/mcpy-entrypoint
-RUN chmod 0755 /usr/local/bin/mcpy-entrypoint
+COPY deploy/docker/entrypoint.sh /usr/local/bin/mcpxy-entrypoint
+RUN chmod 0755 /usr/local/bin/mcpxy-entrypoint
 
 # Non-root runtime user with a writable data dir for runtime artefacts
 # (file-drop watcher directory, telemetry buffers, etc).  Ubuntu 24.04
 # ships with an unused `ubuntu` user at uid 1000; we use `--no-log-init`
 # + `--system` to create a fresh service account at a different uid.
-RUN groupadd --system mcpy \
-    && useradd --system --no-log-init --gid mcpy --home /var/lib/mcpy \
-               --shell /usr/sbin/nologin mcpy \
-    && mkdir -p /etc/mcpy /var/lib/mcpy \
-    && chown -R mcpy:mcpy /var/lib/mcpy /etc/mcpy
+RUN groupadd --system mcpxy \
+    && useradd --system --no-log-init --gid mcpxy --home /var/lib/mcpxy \
+               --shell /usr/sbin/nologin mcpxy \
+    && mkdir -p /etc/mcpxy /var/lib/mcpxy \
+    && chown -R mcpxy:mcpxy /var/lib/mcpxy /etc/mcpxy
 
-USER mcpy
-WORKDIR /var/lib/mcpy
+USER mcpxy
+WORKDIR /var/lib/mcpxy
 
 EXPOSE 8000
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \
     CMD curl -fsS http://127.0.0.1:8000/health || exit 1
 
-ENTRYPOINT ["/usr/local/bin/mcpy-entrypoint"]
+ENTRYPOINT ["/usr/local/bin/mcpxy-entrypoint"]
 CMD ["serve"]

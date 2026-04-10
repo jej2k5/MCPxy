@@ -14,7 +14,7 @@ Covers the whole backend surface:
 - The "onboarding_required" 503 middleware on every *other* admin path
 - 410 Gone after finish
 - TTL expiry behaviour
-- Loopback-only gating + override via MCPY_ONBOARDING_ALLOWED_CLIENTS
+- Loopback-only gating + override via MCPXY_ONBOARDING_ALLOWED_CLIENTS
 """
 
 from __future__ import annotations
@@ -27,15 +27,15 @@ import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from mcp_proxy.config import AppConfig, AuthConfig, resolve_admin_token
-from mcp_proxy.plugins.registry import PluginRegistry
-from mcp_proxy.proxy.bridge import ProxyBridge
-from mcp_proxy.proxy.manager import UpstreamManager
-from mcp_proxy.secrets import SecretsManager
-from mcp_proxy.server import AppState, create_app
-from mcp_proxy.storage.config_store import ConfigStore, open_store
-from mcp_proxy.telemetry.noop_sink import NoopTelemetrySink
-from mcp_proxy.telemetry.pipeline import TelemetryPipeline
+from mcpxy_proxy.config import AppConfig, AuthConfig, resolve_admin_token
+from mcpxy_proxy.plugins.registry import PluginRegistry
+from mcpxy_proxy.proxy.bridge import ProxyBridge
+from mcpxy_proxy.proxy.manager import UpstreamManager
+from mcpxy_proxy.secrets import SecretsManager
+from mcpxy_proxy.server import AppState, create_app
+from mcpxy_proxy.storage.config_store import ConfigStore, open_store
+from mcpxy_proxy.telemetry.noop_sink import NoopTelemetrySink
+from mcpxy_proxy.telemetry.pipeline import TelemetryPipeline
 
 
 # ---------------------------------------------------------------------------
@@ -44,7 +44,7 @@ from mcp_proxy.telemetry.pipeline import TelemetryPipeline
 
 
 def test_resolve_admin_token_prefers_direct() -> None:
-    cfg = AuthConfig(token="literal", token_env="MCPY_SHOULD_NOT_READ")
+    cfg = AuthConfig(token="literal", token_env="MCPXY_SHOULD_NOT_READ")
     assert resolve_admin_token(cfg, env_lookup=lambda _: "env-value") == "literal"
 
 
@@ -69,7 +69,7 @@ def test_resolve_admin_token_treats_empty_env_as_unset() -> None:
 
 
 def test_redact_masks_direct_token() -> None:
-    from mcp_proxy.config import redact_secrets
+    from mcpxy_proxy.config import redact_secrets
 
     out = redact_secrets(
         {
@@ -88,7 +88,7 @@ def test_redact_masks_direct_token() -> None:
 
 def _build_store(tmp_path: Path) -> ConfigStore:
     return open_store(
-        f"sqlite:///{tmp_path / 'mcpy.db'}",
+        f"sqlite:///{tmp_path / 'mcpxy.db'}",
         fernet=Fernet(Fernet.generate_key()),
     )
 
@@ -159,7 +159,7 @@ def _build_app(
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     fernet = Fernet(Fernet.generate_key())
-    store = open_store(f"sqlite:///{state_dir / 'mcpy.db'}", fernet=fernet)
+    store = open_store(f"sqlite:///{state_dir / 'mcpxy.db'}", fernet=fernet)
 
     raw: dict[str, Any] = {
         "auth": {"token": admin_token, "token_env": None},
@@ -333,7 +333,7 @@ def test_add_upstream_during_onboarding_stamps_row(tmp_path: Path) -> None:
 def test_onboarding_loopback_only_by_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("MCPY_ONBOARDING_ALLOWED_CLIENTS", "203.0.113.9")
+    monkeypatch.setenv("MCPXY_ONBOARDING_ALLOWED_CLIENTS", "203.0.113.9")
     app, store = _build_app(tmp_path)
     with TestClient(app) as client:
         r = client.post(
@@ -352,7 +352,7 @@ def test_parse_allowed_clients_splits_literals_and_networks() -> None:
     as literals while coercing valid IPs/CIDRs into network objects.
     Bare IPs become /32 or /128 networks via ``strict=False``.
     """
-    from mcp_proxy.server import _parse_allowed_clients
+    from mcpxy_proxy.server import _parse_allowed_clients
 
     literals, networks = _parse_allowed_clients(
         [
@@ -376,7 +376,7 @@ def test_client_ip_allowed_matches_cidr_and_literal() -> None:
     ``testclient``/``localhost`` sentinels) and CIDR membership (for
     Docker NAT ranges like 172.66.0.0/16).
     """
-    from mcp_proxy.server import _client_ip_allowed, _parse_allowed_clients
+    from mcpxy_proxy.server import _client_ip_allowed, _parse_allowed_clients
 
     literals, networks = _parse_allowed_clients(
         ["127.0.0.1", "testclient", "172.66.0.0/16"]
@@ -400,7 +400,7 @@ def test_onboarding_cidr_override_admits_range(
     the port-forwarded TCP peer lives in a 172.66.x.x NAT subnet that
     the operator cannot enumerate by exact IP (Docker Desktop can pick
     different addresses across reboots). Setting
-    ``MCPY_ONBOARDING_ALLOWED_CLIENTS`` to a CIDR like ``172.66.0.0/16``
+    ``MCPXY_ONBOARDING_ALLOWED_CLIENTS`` to a CIDR like ``172.66.0.0/16``
     must admit every address in that block. Before CIDR support, the
     parser did exact string matching only and the env var was useless
     for anything but pinned single IPs.
@@ -408,12 +408,12 @@ def test_onboarding_cidr_override_admits_range(
     from unittest.mock import patch
 
     monkeypatch.setenv(
-        "MCPY_ONBOARDING_ALLOWED_CLIENTS",
+        "MCPXY_ONBOARDING_ALLOWED_CLIENTS",
         "127.0.0.1,::1,172.66.0.0/16",
     )
     app, store = _build_app(tmp_path)
 
-    with patch("mcp_proxy.server._client_ip", return_value="172.66.0.243"):
+    with patch("mcpxy_proxy.server._client_ip", return_value="172.66.0.243"):
         with TestClient(app) as client:
             r = client.post(
                 "/admin/api/onboarding/set_admin_token",
@@ -426,12 +426,12 @@ def test_onboarding_cidr_override_admits_range(
 def test_onboarding_expired_returns_410(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("MCPY_ONBOARDING_TTL_S", "60")
+    monkeypatch.setenv("MCPXY_ONBOARDING_TTL_S", "60")
     app, store = _build_app(tmp_path)
     # Move the row's created_at into the past by rewriting the DB directly.
     from sqlalchemy import update
 
-    from mcp_proxy.storage.schema import onboarding_table
+    from mcpxy_proxy.storage.schema import onboarding_table
 
     with store.engine.begin() as conn:
         long_ago = time.time() - 3600
@@ -511,7 +511,7 @@ def test_admin_api_stays_closed_after_expired_onboarding_without_token(
     ``resolve_admin_token`` branch still returns 503 because the live
     config has neither ``auth.token`` nor a readable ``auth.token_env``.
     """
-    monkeypatch.setenv("MCPY_ONBOARDING_TTL_S", "60")
+    monkeypatch.setenv("MCPXY_ONBOARDING_TTL_S", "60")
     app, store = _build_app(
         tmp_path,
         with_onboarding=True,
@@ -524,7 +524,7 @@ def test_admin_api_stays_closed_after_expired_onboarding_without_token(
 
     from sqlalchemy import update as sa_update
 
-    from mcp_proxy.storage.schema import onboarding_table
+    from mcpxy_proxy.storage.schema import onboarding_table
 
     with store.engine.begin() as conn:
         conn.execute(
@@ -773,7 +773,7 @@ def test_set_database_hot_swap_to_fresh_sqlite_file(tmp_path: Path) -> None:
     row is re-seeded on the target, and the proxy's live store now
     answers reads from the new DB.
     """
-    from mcp_proxy.storage.bootstrap import load_bootstrap
+    from mcpxy_proxy.storage.bootstrap import load_bootstrap
 
     app, store = _build_app(tmp_path)
     target = tmp_path / "state" / "new-target.db"
@@ -838,11 +838,11 @@ def test_set_database_refuses_invalid_url(tmp_path: Path) -> None:
 
 def test_bootstrap_file_resolves_to_new_url_on_restart(tmp_path: Path) -> None:
     """Simulate a restart: write bootstrap.json then reopen the store
-    with no MCPY_DB_URL set. The new store must land on the bootstrap
+    with no MCPXY_DB_URL set. The new store must land on the bootstrap
     URL, proving the second-boot path works end-to-end.
     """
-    from mcp_proxy.storage.bootstrap import BootstrapConfig, write_bootstrap
-    from mcp_proxy.storage.db import resolve_database_url
+    from mcpxy_proxy.storage.bootstrap import BootstrapConfig, write_bootstrap
+    from mcpxy_proxy.storage.db import resolve_database_url
 
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -854,10 +854,10 @@ def test_bootstrap_file_resolves_to_new_url_on_restart(tmp_path: Path) -> None:
     # Clear any env override the test runner might leave behind.
     import os as _os
 
-    prior = _os.environ.pop("MCPY_DB_URL", None)
+    prior = _os.environ.pop("MCPXY_DB_URL", None)
     try:
         resolved = resolve_database_url(None, state_dir=state_dir)
         assert resolved == f"sqlite:///{target}"
     finally:
         if prior is not None:
-            _os.environ["MCPY_DB_URL"] = prior
+            _os.environ["MCPXY_DB_URL"] = prior

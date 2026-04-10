@@ -4,8 +4,8 @@ from typing import Any
 
 import pytest
 
-from mcp_proxy import cli
-from mcp_proxy.config import AppConfig, TlsConfig
+from mcpxy_proxy import cli
+from mcpxy_proxy.config import AppConfig, TlsConfig
 
 
 def _state_with_tls(tls: TlsConfig | None = None) -> SimpleNamespace:
@@ -57,7 +57,7 @@ def test_main_serve_wires_settings(monkeypatch: pytest.MonkeyPatch) -> None:
         sys,
         "argv",
         [
-            "mcp-proxy",
+            "mcpxy-proxy",
             "serve",
             "--config",
             "config.json",
@@ -95,7 +95,7 @@ def test_main_serve_wires_settings(monkeypatch: pytest.MonkeyPatch) -> None:
         # Uvicorn's default Proxy-Headers middleware trusts
         # ``X-Forwarded-For`` from any 127.0.0.1 peer, which silently
         # lets clients spoof their IP for admin allowlist, onboarding
-        # allowlist, and rate-limit attribution purposes. MCPy must
+        # allowlist, and rate-limit attribution purposes. MCPxy must
         # opt out so ``request.client.host`` always reflects the real
         # TCP peer.
         "proxy_headers": False,
@@ -138,7 +138,7 @@ def test_main_serve_tls_flags_forwarded(monkeypatch: pytest.MonkeyPatch) -> None
         sys,
         "argv",
         [
-            "mcp-proxy",
+            "mcpxy-proxy",
             "serve",
             "--listen",
             "0.0.0.0:8443",
@@ -169,7 +169,7 @@ def test_main_serve_tls_requires_both_cert_and_key(
         sys,
         "argv",
         [
-            "mcp-proxy",
+            "mcpxy-proxy",
             "serve",
             "--ssl-keyfile",
             "/tmp/key.pem",
@@ -193,7 +193,7 @@ def test_main_serve_tls_missing_cert_file_fails_fast(
         sys,
         "argv",
         [
-            "mcp-proxy",
+            "mcpxy-proxy",
             "serve",
             "--ssl-certfile",
             "/no/such/cert.pem",
@@ -227,7 +227,7 @@ def test_main_serve_cli_tls_overrides_config_tls(
         sys,
         "argv",
         [
-            "mcp-proxy",
+            "mcpxy-proxy",
             "serve",
             "--ssl-certfile",
             "/from/cli/cert.pem",
@@ -255,7 +255,7 @@ def test_main_serve_config_tls_used_when_no_cli_flags(
     )
     _install_serve_stubs(monkeypatch, state=state, called=called)
     monkeypatch.setattr(cli.Path, "is_file", lambda self: True)
-    monkeypatch.setattr(sys, "argv", ["mcp-proxy", "serve"])
+    monkeypatch.setattr(sys, "argv", ["mcpxy-proxy", "serve"])
 
     assert cli.main() == 0
     kwargs = called["uvicorn"]
@@ -278,8 +278,8 @@ def test_main_serve_no_tls_flag_disables_https(
     def _should_not_run(state_dir: Any) -> tuple[str, str]:
         raise AssertionError("ensure_dev_cert should not run under --no-tls")
 
-    monkeypatch.setattr("mcp_proxy.tls.ensure_dev_cert", _should_not_run)
-    monkeypatch.setattr(sys, "argv", ["mcp-proxy", "serve", "--no-tls"])
+    monkeypatch.setattr("mcpxy_proxy.tls.ensure_dev_cert", _should_not_run)
+    monkeypatch.setattr(sys, "argv", ["mcpxy-proxy", "serve", "--no-tls"])
 
     assert cli.main() == 0
     kwargs = called["uvicorn"]
@@ -291,7 +291,7 @@ def test_main_serve_no_tls_flag_disables_https(
 def test_main_serve_auto_generates_tls_by_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """With no TLS flags and no config tls block, MCPy auto-generates a
+    """With no TLS flags and no config tls block, MCPxy auto-generates a
     self-signed cert and serves HTTPS. This is the default first-run
     experience.
     """
@@ -304,8 +304,8 @@ def test_main_serve_auto_generates_tls_by_default(
         ensure_calls.append(state_dir)
         return "/auto/cert.pem", "/auto/key.pem"
 
-    monkeypatch.setattr("mcp_proxy.tls.ensure_dev_cert", fake_ensure_dev_cert)
-    monkeypatch.setattr(sys, "argv", ["mcp-proxy", "serve"])
+    monkeypatch.setattr("mcpxy_proxy.tls.ensure_dev_cert", fake_ensure_dev_cert)
+    monkeypatch.setattr(sys, "argv", ["mcpxy-proxy", "serve"])
 
     assert cli.main() == 0
     assert len(ensure_calls) == 1
@@ -329,12 +329,12 @@ def test_main_serve_explicit_ssl_flags_skip_auto_gen(
     def _should_not_run(state_dir: Any) -> tuple[str, str]:
         raise AssertionError("ensure_dev_cert should not run when --ssl-* flags are set")
 
-    monkeypatch.setattr("mcp_proxy.tls.ensure_dev_cert", _should_not_run)
+    monkeypatch.setattr("mcpxy_proxy.tls.ensure_dev_cert", _should_not_run)
     monkeypatch.setattr(
         sys,
         "argv",
         [
-            "mcp-proxy",
+            "mcpxy-proxy",
             "serve",
             "--ssl-certfile",
             "/real/cert.pem",
@@ -370,8 +370,8 @@ def test_main_serve_config_tls_skips_auto_gen(
     def _should_not_run(state_dir: Any) -> tuple[str, str]:
         raise AssertionError("ensure_dev_cert should not run when tls is configured")
 
-    monkeypatch.setattr("mcp_proxy.tls.ensure_dev_cert", _should_not_run)
-    monkeypatch.setattr(sys, "argv", ["mcp-proxy", "serve"])
+    monkeypatch.setattr("mcpxy_proxy.tls.ensure_dev_cert", _should_not_run)
+    monkeypatch.setattr(sys, "argv", ["mcpxy-proxy", "serve"])
 
     assert cli.main() == 0
     kwargs = called["uvicorn"]

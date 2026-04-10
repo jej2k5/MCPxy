@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from mcp_proxy.cli import main
+from mcpxy_proxy.cli import main
 
 
 def test_catalog_list_plain_output(capsys: pytest.CaptureFixture[str]) -> None:
@@ -71,19 +71,19 @@ def test_discover_local_json(
     # Point every importer at a missing path.
     missing = [tmp_path / "nope.json"]
     with patch(
-        "mcp_proxy.discovery.importers.ClaudeDesktopImporter.candidate_paths",
+        "mcpxy_proxy.discovery.importers.ClaudeDesktopImporter.candidate_paths",
         return_value=missing,
     ), patch(
-        "mcp_proxy.discovery.importers.ClaudeCodeImporter.candidate_paths",
+        "mcpxy_proxy.discovery.importers.ClaudeCodeImporter.candidate_paths",
         return_value=missing,
     ), patch(
-        "mcp_proxy.discovery.importers.CursorImporter.candidate_paths",
+        "mcpxy_proxy.discovery.importers.CursorImporter.candidate_paths",
         return_value=missing,
     ), patch(
-        "mcp_proxy.discovery.importers.WindsurfImporter.candidate_paths",
+        "mcpxy_proxy.discovery.importers.WindsurfImporter.candidate_paths",
         return_value=missing,
     ), patch(
-        "mcp_proxy.discovery.importers.ContinueImporter.candidate_paths",
+        "mcpxy_proxy.discovery.importers.ContinueImporter.candidate_paths",
         return_value=missing,
     ):
         rc = main(["discover", "--json"])
@@ -108,7 +108,7 @@ def test_import_dry_run_prints_selected_entries(
         encoding="utf-8",
     )
     with patch(
-        "mcp_proxy.discovery.importers.ClaudeDesktopImporter.candidate_paths",
+        "mcpxy_proxy.discovery.importers.ClaudeDesktopImporter.candidate_paths",
         return_value=[cfg],
     ):
         rc = main(["import", "--client", "claude-desktop", "--dry-run"])
@@ -134,7 +134,7 @@ def test_import_filters_by_name(
         encoding="utf-8",
     )
     with patch(
-        "mcp_proxy.discovery.importers.ClaudeDesktopImporter.candidate_paths",
+        "mcpxy_proxy.discovery.importers.ClaudeDesktopImporter.candidate_paths",
         return_value=[cfg],
     ):
         rc = main(
@@ -171,7 +171,7 @@ def test_register_and_unregister_calls_remote_endpoint(
         calls.append((method, url, body))
         return {"applied": True}
 
-    with patch("mcp_proxy.cli._remote_call", side_effect=fake_remote):
+    with patch("mcpxy_proxy.cli._remote_call", side_effect=fake_remote):
         rc = main(
             [
                 "register",

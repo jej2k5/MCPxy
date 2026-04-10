@@ -84,7 +84,7 @@ export default function LoginGate({ onAuthed }: { onAuthed: () => void }) {
           <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-accent-500 text-xl font-bold text-white">
             M
           </div>
-          <h1 className="text-xl font-semibold text-slate-100">MCPy Admin</h1>
+          <h1 className="text-xl font-semibold text-slate-100">MCPxy Admin</h1>
           <p className="mt-1 text-sm text-slate-400">
             {isLegacy ? "Sign in with your proxy admin token" : "Sign in to continue"}
           </p>

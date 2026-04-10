@@ -11,14 +11,14 @@ import copy
 import pytest
 from pydantic import ValidationError
 
-from mcp_proxy.config import (
+from mcpxy_proxy.config import (
     AppConfig,
     PoliciesConfig,
     RedactionPolicy,
     UpstreamPolicies,
 )
-from mcp_proxy.policy.engine import PolicyEngine
-from mcp_proxy.policy.redaction import build_redactor
+from mcpxy_proxy.policy.engine import PolicyEngine
+from mcpxy_proxy.policy.redaction import build_redactor
 
 
 # ---------------------------------------------------------------------------

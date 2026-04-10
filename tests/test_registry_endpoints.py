@@ -7,12 +7,12 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
-from mcp_proxy.config import AppConfig
-from mcp_proxy.proxy.bridge import ProxyBridge
-from mcp_proxy.proxy.manager import PluginRegistry, UpstreamManager
-from mcp_proxy.server import AppState, create_app
-from mcp_proxy.telemetry.noop_sink import NoopTelemetrySink
-from mcp_proxy.telemetry.pipeline import TelemetryPipeline
+from mcpxy_proxy.config import AppConfig
+from mcpxy_proxy.proxy.bridge import ProxyBridge
+from mcpxy_proxy.proxy.manager import PluginRegistry, UpstreamManager
+from mcpxy_proxy.server import AppState, create_app
+from mcpxy_proxy.telemetry.noop_sink import NoopTelemetrySink
+from mcpxy_proxy.telemetry.pipeline import TelemetryPipeline
 
 
 HEADERS = {"Authorization": "Bearer secret"}
@@ -37,7 +37,7 @@ def _client() -> TestClient:
     bridge = ProxyBridge(manager)
     telemetry = TelemetryPipeline(NoopTelemetrySink())
     raw = config.model_dump()
-    # Disable file-drop watcher for tests so we don't touch ~/.mcpy.
+    # Disable file-drop watcher for tests so we don't touch ~/.mcpxy.
     raw["registration"] = {"file_drop_enabled": False}
     state = AppState(config, raw, manager, bridge, telemetry, reg)
     return TestClient(create_app(state))
@@ -124,19 +124,19 @@ def test_discovery_clients_endpoint_is_stable() -> None:
     # a deterministic "not detected" result regardless of host state.
     missing = [Path("/definitely/not/here.json")]
     with patch(
-        "mcp_proxy.discovery.importers.ClaudeDesktopImporter.candidate_paths",
+        "mcpxy_proxy.discovery.importers.ClaudeDesktopImporter.candidate_paths",
         return_value=missing,
     ), patch(
-        "mcp_proxy.discovery.importers.ClaudeCodeImporter.candidate_paths",
+        "mcpxy_proxy.discovery.importers.ClaudeCodeImporter.candidate_paths",
         return_value=missing,
     ), patch(
-        "mcp_proxy.discovery.importers.CursorImporter.candidate_paths",
+        "mcpxy_proxy.discovery.importers.CursorImporter.candidate_paths",
         return_value=missing,
     ), patch(
-        "mcp_proxy.discovery.importers.WindsurfImporter.candidate_paths",
+        "mcpxy_proxy.discovery.importers.WindsurfImporter.candidate_paths",
         return_value=missing,
     ), patch(
-        "mcp_proxy.discovery.importers.ContinueImporter.candidate_paths",
+        "mcpxy_proxy.discovery.importers.ContinueImporter.candidate_paths",
         return_value=missing,
     ):
         res = client.get("/admin/api/discovery/clients", headers=HEADERS)
@@ -161,7 +161,7 @@ def test_discovery_import_adds_selected_upstreams(tmp_path: Path) -> None:
     )
     client = _client()
     with patch(
-        "mcp_proxy.discovery.importers.ClaudeDesktopImporter.candidate_paths",
+        "mcpxy_proxy.discovery.importers.ClaudeDesktopImporter.candidate_paths",
         return_value=[config_path],
     ):
         res = client.post(
@@ -196,7 +196,7 @@ def test_discovery_import_missing_upstream_404(tmp_path: Path) -> None:
     config_path.write_text(json.dumps({"mcpServers": {}}), encoding="utf-8")
     client = _client()
     with patch(
-        "mcp_proxy.discovery.importers.ClaudeDesktopImporter.candidate_paths",
+        "mcpxy_proxy.discovery.importers.ClaudeDesktopImporter.candidate_paths",
         return_value=[config_path],
     ):
         res = client.post(

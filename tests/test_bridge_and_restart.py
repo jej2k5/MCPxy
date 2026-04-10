@@ -1,9 +1,9 @@
 import pytest
 
-from mcp_proxy.jsonrpc import JsonRpcError
-from mcp_proxy.proxy.base import UpstreamTransport
-from mcp_proxy.proxy.bridge import ProxyBridge
-from mcp_proxy.proxy.manager import PluginRegistry, UpstreamManager
+from mcpxy_proxy.jsonrpc import JsonRpcError
+from mcpxy_proxy.proxy.base import UpstreamTransport
+from mcpxy_proxy.proxy.bridge import ProxyBridge
+from mcpxy_proxy.proxy.manager import PluginRegistry, UpstreamManager
 
 
 class DummyTransport(UpstreamTransport):

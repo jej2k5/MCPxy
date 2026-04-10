@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from mcp_proxy.proxy.stdio import StdioUpstreamTransport
+from mcpxy_proxy.proxy.stdio import StdioUpstreamTransport
 
 
 class _FakeStdout:

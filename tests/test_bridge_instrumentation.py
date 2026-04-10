@@ -1,9 +1,9 @@
 import pytest
 
-from mcp_proxy.observability.traffic import TrafficRecord, TrafficRecorder
-from mcp_proxy.proxy.base import UpstreamTransport
-from mcp_proxy.proxy.bridge import ProxyBridge
-from mcp_proxy.proxy.manager import PluginRegistry, UpstreamManager
+from mcpxy_proxy.observability.traffic import TrafficRecord, TrafficRecorder
+from mcpxy_proxy.proxy.base import UpstreamTransport
+from mcpxy_proxy.proxy.bridge import ProxyBridge
+from mcpxy_proxy.proxy.manager import PluginRegistry, UpstreamManager
 
 
 class OkTransport(UpstreamTransport):
@@ -111,7 +111,7 @@ async def test_forward_records_unavailable_upstream() -> None:
     recorder = TrafficRecorder()
     bridge.set_traffic_recorder(recorder.record)
 
-    from mcp_proxy.jsonrpc import JsonRpcError
+    from mcpxy_proxy.jsonrpc import JsonRpcError
 
     with pytest.raises(JsonRpcError):
         await bridge.forward("missing", {"jsonrpc": "2.0", "id": 7, "method": "x"})
@@ -133,7 +133,7 @@ async def test_forward_records_overloaded_when_queue_full() -> None:
     recorder = TrafficRecorder()
     bridge.set_traffic_recorder(recorder.record)
 
-    from mcp_proxy.jsonrpc import JsonRpcError
+    from mcpxy_proxy.jsonrpc import JsonRpcError
 
     with pytest.raises(JsonRpcError):
         await bridge.forward("a", {"jsonrpc": "2.0", "id": 1, "method": "x"})

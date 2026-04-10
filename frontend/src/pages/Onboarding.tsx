@@ -182,7 +182,7 @@ export default function Onboarding({
         <header className="mb-8 space-y-2">
           <div className="flex items-center gap-3">
             <Sparkles className="h-6 w-6 text-accent-400" />
-            <h1 className="text-2xl font-semibold">Welcome to MCPy</h1>
+            <h1 className="text-2xl font-semibold">Welcome to MCPxy</h1>
           </div>
           <p className="text-sm text-slate-400">
             First-run setup. This takes about two minutes and unlocks the
@@ -280,7 +280,7 @@ function WelcomeStep({ onNext }: { onNext: () => void }) {
     <div className="card space-y-4">
       <div className="space-y-3 text-sm text-slate-300">
         <p>
-          MCPy is a proxy that fans out <span className="font-mono">Model Context Protocol</span>{" "}
+          MCPxy is a proxy that fans out <span className="font-mono">Model Context Protocol</span>{" "}
           clients to any number of upstream MCP servers.
         </p>
         <p>In the next few steps we'll:</p>
@@ -326,9 +326,9 @@ const DIALECT_DEFAULT_PORTS: Record<DialectChoice, number> = {
 const DIALECT_EXTRA_HINT: Record<DialectChoice, string> = {
   sqlite: "",
   postgresql:
-    "psycopg2 driver not installed — run `pip install mcpy-proxy[postgres]` and restart the proxy.",
+    "psycopg2 driver not installed — run `pip install mcpxy-proxy[postgres]` and restart the proxy.",
   mysql:
-    "PyMySQL driver not installed — run `pip install mcpy-proxy[mysql]` and restart the proxy.",
+    "PyMySQL driver not installed — run `pip install mcpxy-proxy[mysql]` and restart the proxy.",
 };
 
 function StorageStep({
@@ -351,7 +351,7 @@ function StorageStep({
   const [dialect, setDialect] = useState<DialectChoice>("sqlite");
   const [host, setHost] = useState("localhost");
   const [port, setPort] = useState<string>("5432");
-  const [database, setDatabase] = useState("mcpy");
+  const [database, setDatabase] = useState("mcpxy");
   const [user, setUser] = useState("");
   const [password, setPassword] = useState("");
   const [sslmode, setSslmode] = useState("");
@@ -457,11 +457,11 @@ function StorageStep({
         <div className="flex items-center gap-2">
           <Database className="h-4 w-4 text-accent-400" />
           <h2 className="text-lg font-semibold">
-            Where should MCPy store its config and secrets?
+            Where should MCPxy store its config and secrets?
           </h2>
         </div>
         <p className="text-sm text-slate-400">
-          MCPy stores its active config, upstream definitions, encrypted
+          MCPxy stores its active config, upstream definitions, encrypted
           secrets, and OAuth tokens in a single database. You can keep
           the default file-based SQLite store or point the proxy at
           your own PostgreSQL / MySQL.
@@ -622,7 +622,7 @@ function StorageStep({
             <div className="mt-3 space-y-2">
               <input
                 className="input font-mono text-xs"
-                placeholder="postgresql+psycopg2://user:pass@host:5432/mcpy?sslmode=require"
+                placeholder="postgresql+psycopg2://user:pass@host:5432/mcpxy?sslmode=require"
                 value={rawUrl}
                 onChange={(e) => {
                   setRawUrl(e.target.value);
@@ -646,7 +646,7 @@ function StorageStep({
               </span>
               . If you're pointing the proxy at a remote database, make sure
               this file is reachable from wherever the proxy runs — or set{" "}
-              <span className="font-mono">MCPY_SECRETS_KEY</span>. Without
+              <span className="font-mono">MCPXY_SECRETS_KEY</span>. Without
               it, encrypted secrets cannot be decrypted after the swap.
             </p>
             <label className="mt-2 flex items-start gap-2 text-warn">
@@ -751,9 +751,9 @@ function RestartRequiredCard({
       )}
       <div className="text-xs text-slate-500">
         Docker Compose:{" "}
-        <span className="font-mono">docker compose restart mcpy</span>.
+        <span className="font-mono">docker compose restart mcpxy</span>.
         Systemd:{" "}
-        <span className="font-mono">systemctl restart mcpy</span>.
+        <span className="font-mono">systemctl restart mcpxy</span>.
       </div>
     </div>
   );
@@ -866,7 +866,7 @@ function AuthStep({
       <div>
         <h3 className="text-base font-semibold text-slate-100">Choose authentication method</h3>
         <p className="mt-1 text-sm text-slate-400">
-          Select how administrators and users will sign in to MCPy.
+          Select how administrators and users will sign in to MCPxy.
         </p>
       </div>
 

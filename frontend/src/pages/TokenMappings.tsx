@@ -75,7 +75,7 @@ export default function TokenMappings() {
         <div>
           <h2 className="text-lg font-semibold text-slate-100">Token Mappings</h2>
           <p className="mt-1 text-sm text-slate-400">
-            Map MCPy user identities to upstream MCP server tokens. Used when an
+            Map MCPxy user identities to upstream MCP server tokens. Used when an
             upstream's <code className="text-xs">token_transform</code> strategy is
             set to <code className="text-xs">map</code>.
           </p>
