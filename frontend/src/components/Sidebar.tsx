@@ -5,14 +5,16 @@ import {
   Compass,
   Download,
   FileText,
+  KeyRound,
   LayoutDashboard,
   LogOut,
   Network,
   Plug,
   Settings2,
   ShieldCheck,
+  Users2,
 } from "lucide-react";
-import { setToken } from "../api/client";
+import { logout } from "../api/client";
 
 const items = [
   { to: "/overview", label: "Overview", icon: LayoutDashboard },
@@ -25,9 +27,14 @@ const items = [
   { to: "/connect", label: "Connect", icon: Plug },
   { to: "/logs", label: "Logs", icon: FileText },
   { to: "/config", label: "Config", icon: Settings2 },
+  { to: "/tokens", label: "Tokens", icon: KeyRound },
 ];
 
-export default function Sidebar({ onSignOut }: { onSignOut: () => void }) {
+const adminItems = [
+  { to: "/users", label: "Users", icon: Users2 },
+];
+
+export default function Sidebar({ onSignOut, isAdmin }: { onSignOut: () => void; isAdmin?: boolean }) {
   return (
     <aside className="flex w-56 flex-col border-r border-surface-700 bg-surface-900">
       <div className="flex items-center gap-2 border-b border-surface-700 px-5 py-4">
@@ -56,12 +63,27 @@ export default function Sidebar({ onSignOut }: { onSignOut: () => void }) {
             {label}
           </NavLink>
         ))}
+        {isAdmin && adminItems.map(({ to, label, icon: Icon }) => (
+          <NavLink
+            key={to}
+            to={to}
+            className={({ isActive }) =>
+              `flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition ${
+                isActive
+                  ? "bg-accent-500/15 text-accent-400"
+                  : "text-slate-300 hover:bg-surface-800 hover:text-slate-100"
+              }`
+            }
+          >
+            <Icon className="h-4 w-4" />
+            {label}
+          </NavLink>
+        ))}
       </nav>
       <button
         className="flex items-center gap-3 border-t border-surface-700 px-5 py-3 text-sm text-slate-400 hover:bg-surface-800 hover:text-slate-100"
         onClick={() => {
-          setToken(null);
-          onSignOut();
+          logout().then(onSignOut);
         }}
       >
         <LogOut className="h-4 w-4" />

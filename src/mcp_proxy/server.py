@@ -26,12 +26,26 @@ from mcp_proxy.auth.oauth import (
     OAuthManager,
     OAuthNotAuthorizedError,
 )
+from mcp_proxy.authn import (
+    AuthnManager,
+    Principal,
+    accept_invite,
+    create_bootstrap_admin,
+    ensure_federated_user_on_callback,
+    extract_principal,
+    invite_user,
+    mint_pat,
+    verify_pat,
+)
 from mcp_proxy.config import (
     AppConfig,
+    AuthyConfig,
     HttpUpstreamConfig,
     OAuth2AuthConfig,
     find_secret_references,
+    redact_secrets,
     resolve_admin_token,
+    resolve_effective_auth_mode,
 )
 from mcp_proxy.discovery.catalog import Catalog, load_catalog
 from mcp_proxy.discovery.importers import IMPORTERS, discover_all, get_importer
@@ -215,6 +229,7 @@ class AppState:
         # MCPY_SECRETS_KEY is the single point of control for all
         # upstream auth state.
         self.oauth_manager = oauth_manager or OAuthManager(secrets=self.secrets_manager)
+        self.authn = AuthnManager(config.auth.authy, store=self.config_store)
         # If the caller didn't wire the OAuth manager into UpstreamManager
         # (most tests construct UpstreamManager without one), fill it in
         # now so HTTP transports with oauth2 auth can find the shared
@@ -235,7 +250,7 @@ class AppState:
             config_path=self.config_path,
             policy_engine=self.policy_engine,
             secrets_resolver=self.secrets_manager.get,
-            on_config_applied=self._register_oauth_configs,
+            on_config_applied=self._on_config_applied,
             store=self.config_store,
         )
         # Seed the OAuth manager with any upstreams that already have
@@ -262,6 +277,11 @@ class AppState:
     # ------------------------------------------------------------------
     # OAuth config bookkeeping
     # ------------------------------------------------------------------
+
+    def _on_config_applied(self, cfg: AppConfig) -> None:
+        """Called after every successful config apply (hot-reload)."""
+        self._register_oauth_configs(cfg)
+        self.authn.rebuild(cfg.auth.authy)
 
     def _register_oauth_configs(self, cfg: AppConfig) -> None:
         """Push every HTTP upstream's oauth2 config into the OAuthManager.
@@ -366,23 +386,53 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
         """
         return resolve_admin_token(state.runtime_config.config.auth)
 
-    def require_auth_if_needed(request: Request) -> None:
-        expected = _resolve_admin_bearer()
-        if expected and _get_bearer(request) != expected:
-            raise HTTPException(status_code=401, detail="unauthorized")
+    # In-memory state-param store for federated OAuth login flows.
+    _oauth_state_store: dict[str, tuple[str, float]] = {}
 
-    def require_admin_auth(request: Request) -> None:
+    async def _extract_request_principal(request: Request) -> Principal | None:
+        """Resolve a Principal from the request using the Authy integration."""
+        principal = await extract_principal(
+            request,
+            auth_config=state.runtime_config.config.auth,
+            manager=state.authn,
+            store=state.config_store,
+        )
+        if principal is not None:
+            request.state.principal = principal
+        return principal
+
+    async def require_auth_if_needed(request: Request) -> Principal | None:
+        mode = resolve_effective_auth_mode(state.runtime_config.config.auth)
+        if mode == "none":
+            return None
+        principal = await _extract_request_principal(request)
+        if principal is None:
+            raise HTTPException(status_code=401, detail="unauthorized")
+        return principal
+
+    async def require_admin_auth(request: Request) -> Principal:
         admin = state.runtime_config.config.admin
         if admin.allowed_clients:
             literals, networks = _parse_allowed_clients(admin.allowed_clients)
             if not _client_ip_allowed(_client_ip(request), literals, networks):
                 raise HTTPException(status_code=403, detail="forbidden")
+        principal = await _extract_request_principal(request)
+        mode = resolve_effective_auth_mode(state.runtime_config.config.auth)
+        if mode == "authy":
+            if principal is None or principal.role != "admin":
+                raise HTTPException(status_code=401, detail="unauthorized")
+            return principal
+        # Legacy path
         if admin.require_token:
             expected = _resolve_admin_bearer()
             if not expected:
                 raise HTTPException(status_code=500, detail="admin_token_not_configured")
             if _get_bearer(request) != expected:
                 raise HTTPException(status_code=401, detail="unauthorized")
+        return principal or Principal(
+            user_id=-1, email="legacy@local", role="admin",
+            provider="legacy", auth_mode="legacy",
+        )
 
     async def parse_messages(request: Request) -> AsyncIterator[dict[str, Any]]:
         ctype = (request.headers.get("content-type") or "").split(";")[0].strip()
@@ -475,7 +525,7 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
         return response["result"]
 
     async def handle_proxy(request: Request, path_name: str | None, x_mcp_upstream: str | None) -> Response:
-        require_auth_if_needed(request)
+        await require_auth_if_needed(request)
         client_ip = _client_ip(request)
         async def iter_response_lines() -> AsyncIterator[bytes]:
             async for msg in parse_messages(request):
@@ -490,7 +540,7 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
 
                 upstream, cleaned = resolve_upstream(msg, state.runtime_config.config, path_name, x_mcp_upstream)
                 if is_admin_target:
-                    require_admin_auth(request)
+                    await require_admin_auth(request)
                     resp = await admin_service.handle(cleaned, lambda: build_health())
                     if not is_notification(msg):
                         yield (json.dumps(resp) + "\n").encode("utf-8")
@@ -753,6 +803,12 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
             return await call_next(request)
         if path == "/admin/api/oauth/callback":
             return await call_next(request)
+        # Authy login endpoints are always reachable (they handle their
+        # own auth internally).
+        if path.startswith("/admin/api/authy/"):
+            return await call_next(request)
+        if path == "/admin/api/users/accept_invite":
+            return await call_next(request)
         obstate = _current_onboarding()
         public = _onboarding_public(obstate)
         if obstate is not None and public["required"]:
@@ -764,12 +820,19 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
                 status_code=503,
             )
         # Fail closed: refuse ALL non-onboarding admin API calls when
-        # no real bearer is resolvable from the live config, whether
-        # or not onboarding is still "active". Plugs the TTL-expiry
-        # hole (onboarding row exists but expired, and require_token
-        # is still False from bootstrap) and guards against any
-        # future footgun that leaves the proxy with no token at all.
-        if resolve_admin_token(state.runtime_config.config.auth) is None:
+        # no identity is resolvable from the live config, whether via
+        # authy (admin user exists) or legacy bearer.
+        auth_cfg = state.runtime_config.config.auth
+        if auth_cfg.authy.enabled:
+            if state.config_store.count_admins() == 0:
+                return JSONResponse(
+                    {
+                        "detail": "authy_not_configured",
+                        "onboarding": public,
+                    },
+                    status_code=503,
+                )
+        elif resolve_admin_token(auth_cfg) is None:
             return JSONResponse(
                 {
                     "detail": "admin_token_not_configured",
@@ -877,6 +940,322 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
             {"event": "onboarding_finished"}
         )
         return JSONResponse(_onboarding_public(finished))
+
+    # ------------------------------------------------------------------
+    # Authy auth endpoints
+    # ------------------------------------------------------------------
+
+    @app.get("/admin/api/authy/providers")
+    async def admin_api_authy_providers(_request: Request) -> JSONResponse:
+        providers = state.authn.list_enabled_providers()
+        return JSONResponse({
+            "providers": providers,
+            "authy_enabled": state.runtime_config.config.auth.authy.enabled,
+        })
+
+    @app.post("/admin/api/authy/login")
+    async def admin_api_authy_login(request: Request) -> JSONResponse:
+        body = await request.json()
+        email = body.get("email") or body.get("username")
+        password = body.get("password")
+        if not email or not password:
+            raise HTTPException(status_code=400, detail="email and password required")
+        result = await state.authn.authenticate_local(email, password)
+        if not result.success or not result.token:
+            raise HTTPException(status_code=401, detail=result.error or "authentication failed")
+        response = JSONResponse({
+            "token": result.token,
+            "user": result.user.__dict__ if result.user else None,
+        })
+        authy_cfg = state.runtime_config.config.auth.authy
+        response.set_cookie(
+            key=authy_cfg.cookie_name,
+            value=result.token,
+            httponly=True,
+            secure=authy_cfg.cookie_secure,
+            samesite=authy_cfg.cookie_same_site,
+            max_age=authy_cfg.token_ttl_s,
+            path="/",
+        )
+        return response
+
+    @app.post("/admin/api/authy/login/start")
+    async def admin_api_authy_login_start(request: Request) -> JSONResponse:
+        import secrets as _secrets
+        body = await request.json()
+        provider = body.get("provider")
+        if not provider:
+            raise HTTPException(status_code=400, detail="provider required")
+        oauth_state = _secrets.token_urlsafe(32)
+        _oauth_state_store[oauth_state] = (provider, time.time())
+        try:
+            auth_url = await state.authn.start_federated(provider, oauth_state)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return JSONResponse({"authorization_url": auth_url})
+
+    @app.get("/admin/api/authy/callback")
+    async def admin_api_authy_callback(request: Request) -> Response:
+        from starlette.responses import RedirectResponse
+        code = request.query_params.get("code")
+        oauth_state = request.query_params.get("state")
+        if not code or not oauth_state:
+            raise HTTPException(status_code=400, detail="code and state required")
+        entry = _oauth_state_store.pop(oauth_state, None)
+        if entry is None:
+            raise HTTPException(status_code=400, detail="invalid or expired state")
+        provider, created = entry
+        if time.time() - created > 600:
+            raise HTTPException(status_code=400, detail="state expired")
+        result = await state.authn.complete_federated(provider, code, oauth_state)
+        if not result.success or not result.user:
+            raise HTTPException(status_code=401, detail=result.error or "authentication failed")
+        user, _created = ensure_federated_user_on_callback(
+            state.config_store,
+            provider=provider,
+            subject=result.user.id,
+            email=result.user.email,
+            name=result.user.name,
+        )
+        authy_cfg = state.runtime_config.config.auth.authy
+        token = result.token or ""
+        resp = RedirectResponse(url="/admin", status_code=302)
+        resp.set_cookie(
+            key=authy_cfg.cookie_name,
+            value=token,
+            httponly=True,
+            secure=authy_cfg.cookie_secure,
+            samesite=authy_cfg.cookie_same_site,
+            max_age=authy_cfg.token_ttl_s,
+            path="/",
+        )
+        return resp
+
+    @app.post("/admin/api/authy/logout")
+    async def admin_api_authy_logout(request: Request) -> JSONResponse:
+        principal = await _extract_request_principal(request)
+        if principal and principal.token_jti:
+            from datetime import datetime, timedelta, timezone
+            exp = datetime.now(timezone.utc) + timedelta(
+                seconds=state.runtime_config.config.auth.authy.token_ttl_s
+            )
+            state.config_store.revoke_jwt(principal.token_jti, exp)
+        authy_cfg = state.runtime_config.config.auth.authy
+        response = JSONResponse({"ok": True})
+        response.delete_cookie(key=authy_cfg.cookie_name, path="/")
+        return response
+
+    @app.get("/admin/api/authy/me")
+    async def admin_api_authy_me(request: Request) -> JSONResponse:
+        principal = await _extract_request_principal(request)
+        if principal is None:
+            raise HTTPException(status_code=401, detail="unauthorized")
+        return JSONResponse({
+            "user_id": principal.user_id,
+            "email": principal.email,
+            "role": principal.role,
+            "provider": principal.provider,
+            "auth_mode": principal.auth_mode,
+        })
+
+    # ------------------------------------------------------------------
+    # User management endpoints (admin only)
+    # ------------------------------------------------------------------
+
+    @app.get("/admin/api/users")
+    async def admin_api_users(request: Request) -> JSONResponse:
+        await require_admin_auth(request)
+        users = state.config_store.list_users()
+        return JSONResponse([u.to_public_dict() for u in users])
+
+    @app.post("/admin/api/users/invite")
+    async def admin_api_users_invite(request: Request) -> JSONResponse:
+        principal = await require_admin_auth(request)
+        body = await request.json()
+        email = body.get("email")
+        role = body.get("role", "member")
+        if not email:
+            raise HTTPException(status_code=400, detail="email required")
+        if role not in ("admin", "member"):
+            raise HTTPException(status_code=400, detail="role must be 'admin' or 'member'")
+        record, plaintext = invite_user(
+            state.config_store,
+            email=email,
+            role=role,
+            invited_by_id=principal.user_id if principal.user_id > 0 else None,
+        )
+        result = record.to_public_dict()
+        result["plaintext_token"] = plaintext
+        return JSONResponse(result)
+
+    @app.post("/admin/api/users/accept_invite")
+    async def admin_api_users_accept_invite(request: Request) -> JSONResponse:
+        body = await request.json()
+        token = body.get("token")
+        password = body.get("password")
+        name = body.get("name")
+        if not token or not password:
+            raise HTTPException(status_code=400, detail="token and password required")
+        if len(password) < 8:
+            raise HTTPException(status_code=400, detail="password must be at least 8 characters")
+        user = accept_invite(
+            state.config_store,
+            token_plaintext=token,
+            password=password,
+            name=name,
+            manager=state.authn,
+        )
+        if user is None:
+            raise HTTPException(status_code=400, detail="invalid or expired invite")
+        return JSONResponse(user.to_public_dict(), status_code=201)
+
+    @app.delete("/admin/api/users/{user_id}")
+    async def admin_api_users_delete(user_id: int, request: Request) -> JSONResponse:
+        await require_admin_auth(request)
+        target = state.config_store.get_user(user_id)
+        if target is None:
+            raise HTTPException(status_code=404, detail="user not found")
+        if target.role == "admin" and state.config_store.count_admins() <= 1:
+            raise HTTPException(status_code=400, detail="cannot delete last admin")
+        state.config_store.revoke_all_pats_for_user(user_id)
+        state.config_store.delete_user(user_id)
+        return JSONResponse({"ok": True})
+
+    @app.post("/admin/api/users/{user_id}/role")
+    async def admin_api_users_role(user_id: int, request: Request) -> JSONResponse:
+        await require_admin_auth(request)
+        body = await request.json()
+        role = body.get("role")
+        if role not in ("admin", "member"):
+            raise HTTPException(status_code=400, detail="role must be 'admin' or 'member'")
+        target = state.config_store.get_user(user_id)
+        if target is None:
+            raise HTTPException(status_code=404, detail="user not found")
+        if target.role == "admin" and role == "member" and state.config_store.count_admins() <= 1:
+            raise HTTPException(status_code=400, detail="cannot demote last admin")
+        state.config_store.update_user_role(user_id, role)
+        return JSONResponse({"ok": True})
+
+    # ------------------------------------------------------------------
+    # Personal access token endpoints
+    # ------------------------------------------------------------------
+
+    @app.get("/admin/api/pats")
+    async def admin_api_pats(request: Request) -> JSONResponse:
+        principal = await require_auth_if_needed(request)
+        if principal is None:
+            raise HTTPException(status_code=401, detail="unauthorized")
+        pats = state.config_store.list_pats_for_user(principal.user_id)
+        return JSONResponse([p.to_public_dict() for p in pats])
+
+    @app.post("/admin/api/pats")
+    async def admin_api_pats_create(request: Request) -> JSONResponse:
+        principal = await require_auth_if_needed(request)
+        if principal is None:
+            raise HTTPException(status_code=401, detail="unauthorized")
+        body = await request.json()
+        name = body.get("name", "Untitled")
+        ttl_days = body.get("ttl_days")
+        record, plaintext = mint_pat(
+            state.config_store,
+            user_id=principal.user_id,
+            name=name,
+            ttl_days=int(ttl_days) if ttl_days is not None else None,
+        )
+        result = record.to_public_dict()
+        result["plaintext"] = plaintext
+        return JSONResponse(result, status_code=201)
+
+    @app.delete("/admin/api/pats/{pat_id}")
+    async def admin_api_pats_delete(pat_id: int, request: Request) -> JSONResponse:
+        principal = await require_auth_if_needed(request)
+        if principal is None:
+            raise HTTPException(status_code=401, detail="unauthorized")
+        ok = state.config_store.revoke_pat(pat_id, user_id=principal.user_id)
+        if not ok and principal.role == "admin":
+            ok = state.config_store.revoke_pat(pat_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="token not found or already revoked")
+        return JSONResponse({"ok": True})
+
+    # ------------------------------------------------------------------
+    # Onboarding: set_authy_config (replaces set_admin_token for new wizard)
+    # ------------------------------------------------------------------
+
+    @app.post("/admin/api/onboarding/set_authy_config")
+    async def admin_api_onboarding_set_authy_config(request: Request) -> JSONResponse:
+        _require_onboarding_access(request)
+        body = await request.json()
+        primary_provider = body.get("primary_provider")
+        jwt_secret = body.get("jwt_secret")
+        if not primary_provider or not jwt_secret:
+            raise HTTPException(
+                status_code=400,
+                detail="primary_provider and jwt_secret are required",
+            )
+        # Persist jwt_secret and any client_secret into the secrets store.
+        state.config_store.upsert_secret("AUTHY_JWT_SECRET", jwt_secret)
+        for prov_key in ("google", "m365", "sso_oidc"):
+            prov_block = body.get(prov_key)
+            if isinstance(prov_block, dict) and prov_block.get("client_secret"):
+                secret_name = f"AUTHY_{prov_key.upper()}_CLIENT_SECRET"
+                state.config_store.upsert_secret(secret_name, prov_block["client_secret"])
+                prov_block["client_secret"] = f"${{secret:{secret_name}}}"
+        saml_block = body.get("sso_saml")
+        if isinstance(saml_block, dict):
+            if saml_block.get("idp_cert"):
+                state.config_store.upsert_secret("AUTHY_SAML_IDP_CERT", saml_block["idp_cert"])
+                saml_block["idp_cert"] = "${secret:AUTHY_SAML_IDP_CERT}"
+            if saml_block.get("sp_private_key"):
+                state.config_store.upsert_secret("AUTHY_SAML_SP_KEY", saml_block["sp_private_key"])
+                saml_block["sp_private_key"] = "${secret:AUTHY_SAML_SP_KEY}"
+        # Build the authy config block.
+        authy_block: dict[str, Any] = {
+            "enabled": True,
+            "primary_provider": primary_provider,
+            "jwt_secret": "${secret:AUTHY_JWT_SECRET}",
+            "token_ttl_s": body.get("token_ttl_s", 86400),
+        }
+        for key in ("local", "google", "m365", "sso_oidc", "sso_saml"):
+            val = body.get(key)
+            if val is not None:
+                authy_block[key] = val
+        # Merge into the raw config and apply.
+        merged = deepcopy(state.raw_config)
+        auth_section = merged.setdefault("auth", {})
+        auth_section["authy"] = authy_block
+        auth_section["token"] = None
+        # Turn off require_token since authy manages auth now.
+        admin_section = merged.setdefault("admin", {})
+        admin_section["require_token"] = False
+        try:
+            version = state.runtime_config.apply(
+                merged, source="onboarding.set_authy_config"
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        state.raw_config = merged
+        # Create bootstrap admin user if local provider.
+        bootstrap = body.get("bootstrap_admin")
+        if bootstrap and primary_provider == "local":
+            create_bootstrap_admin(
+                state.config_store,
+                email=bootstrap["email"],
+                name=bootstrap.get("name", bootstrap["email"]),
+                password=bootstrap["password"],
+                manager=state.authn,
+            )
+        # For federated providers, record the bootstrap email.
+        bootstrap_email = None
+        if bootstrap and bootstrap.get("email"):
+            bootstrap_email = bootstrap["email"]
+        elif body.get("bootstrap_admin_email"):
+            bootstrap_email = body["bootstrap_admin_email"]
+        if bootstrap_email:
+            state.config_store.stamp_bootstrap_admin_email(bootstrap_email)
+        # Stamp the onboarding token-set flag.
+        state.config_store.stamp_admin_token_set()
+        return JSONResponse({"ok": True, "version": version})
 
     def _build_url_from_body(body: dict[str, Any]) -> str:
         """Build a database URL from an onboarding request body.
@@ -1148,46 +1527,46 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
 
     @app.get("/admin/api/config")
     async def admin_api_config(request: Request) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         return JSONResponse(await call_admin_method("admin.get_config", {}))
 
     @app.post("/admin/api/config")
     async def admin_api_apply_config(request: Request) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         body = await request.json()
         return JSONResponse(await call_admin_method("admin.apply_config", body))
 
     @app.post("/admin/api/config/validate")
     async def admin_api_validate_config(request: Request) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         body = await request.json()
         return JSONResponse(await call_admin_method("admin.validate_config", body))
 
     @app.get("/admin/api/upstreams")
     async def admin_api_upstreams(request: Request) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         return JSONResponse(await call_admin_method("admin.list_upstreams", {}))
 
     @app.post("/admin/api/restart")
     async def admin_api_restart(request: Request) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         body = await request.json()
         return JSONResponse(await call_admin_method("admin.restart_upstream", body))
 
     @app.get("/admin/api/telemetry")
     async def admin_api_telemetry(request: Request) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         return JSONResponse(state.runtime_config.telemetry.health())
 
     @app.post("/admin/api/telemetry")
     async def admin_api_send_telemetry(request: Request) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         body = await request.json()
         return JSONResponse(await call_admin_method("admin.send_telemetry", body))
 
     @app.get("/admin/api/logs")
     async def admin_api_logs(request: Request, upstream: str | None = None, level: str | None = None) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         return JSONResponse(await call_admin_method("admin.get_logs", {"upstream": upstream, "level": level}))
 
     @app.get("/admin/api/traffic")
@@ -1198,7 +1577,7 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
         method: str | None = None,
         status: str | None = None,
     ) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         limit = max(1, min(limit, 2000))
         return JSONResponse(
             {
@@ -1210,7 +1589,7 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
 
     @app.get("/admin/api/traffic/stream")
     async def admin_api_traffic_stream(request: Request) -> StreamingResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         # Register the subscription synchronously, before the response body
         # starts streaming, so we cannot miss records that arrive between
         # the initial snapshot and the first await.
@@ -1244,32 +1623,32 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
 
     @app.get("/admin/api/metrics")
     async def admin_api_metrics(request: Request) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         metrics = state.traffic.metrics()
         metrics["uptime_s"] = round(time.time() - state.started_at, 3)
         return JSONResponse(metrics)
 
     @app.get("/admin/api/routes")
     async def admin_api_routes(request: Request) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         return JSONResponse(state.route_discovery.snapshot())
 
     @app.post("/admin/api/routes/refresh")
     async def admin_api_routes_refresh(request: Request) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         await state.route_discovery.refresh_now()
         return JSONResponse(state.route_discovery.snapshot())
 
     @app.get("/admin/api/policies")
     async def admin_api_policies_get(request: Request) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         return JSONResponse(
             state.runtime_config.config.policies.model_dump(by_alias=True, mode="json")
         )
 
     @app.post("/admin/api/policies")
     async def admin_api_policies_set(request: Request) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         body = await request.json()
         policies = body.get("policies", body)
         # Merge with the rest of the live raw config so the apply pipeline
@@ -1286,7 +1665,7 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
 
     @app.get("/admin/api/install/clients")
     async def admin_api_install_clients(request: Request) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         return JSONResponse({"clients": list_clients()})
 
     @app.get("/admin/api/install/{client}")
@@ -1298,7 +1677,7 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
         upstream: str | None = None,
         name: str = "mcpy",
     ) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         try:
             adapter = get_adapter(client)
         except KeyError as exc:
@@ -1321,12 +1700,12 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
 
     @app.get("/admin/api/upstreams/registered")
     async def admin_api_registered(request: Request) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         return JSONResponse(state.registration.snapshot())
 
     @app.post("/admin/api/upstreams")
     async def admin_api_register(request: Request) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         body = await request.json()
         name = body.get("name")
         definition = body.get("config") or body.get("definition")
@@ -1348,7 +1727,7 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
 
     @app.delete("/admin/api/upstreams/{name}")
     async def admin_api_unregister(request: Request, name: str) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         try:
             result = await state.registration.remove(name=name, source="admin.api.unregister")
         except RegistrationError as exc:
@@ -1359,12 +1738,12 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
 
     @app.get("/admin/api/discovery/clients")
     async def admin_api_discovery_clients(request: Request) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         return JSONResponse(discover_all())
 
     @app.get("/admin/api/discovery/clients/{client}")
     async def admin_api_discovery_client(request: Request, client: str) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         try:
             importer = get_importer(client)
         except KeyError as exc:
@@ -1383,7 +1762,7 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
 
     @app.post("/admin/api/discovery/import")
     async def admin_api_discovery_import(request: Request) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         body = await request.json()
         client = body.get("client")
         names = body.get("upstreams")
@@ -1429,7 +1808,7 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
         q: str = "",
         category: str | None = None,
     ) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         if state.catalog is None:
             raise HTTPException(status_code=503, detail="catalog_unavailable")
         entries = state.catalog.search(q, category=category)
@@ -1444,7 +1823,7 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
 
     @app.get("/admin/api/secrets")
     async def admin_api_secrets_list(request: Request) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         # Raw secret values never leave the process; list_public returns
         # name + metadata + a masked preview only. ``referenced`` enumerates
         # every ${secret:NAME} found in the current config so the UI can
@@ -1462,7 +1841,7 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
 
     @app.post("/admin/api/secrets")
     async def admin_api_secrets_upsert(request: Request) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         body = await request.json()
         name = body.get("name")
         value = body.get("value")
@@ -1485,7 +1864,7 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
 
     @app.delete("/admin/api/secrets/{name}")
     async def admin_api_secrets_delete(request: Request, name: str) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         try:
             removed = await state.secrets_manager.delete(name)
         except SecretStoreError as exc:
@@ -1503,7 +1882,7 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
 
     @app.get("/admin/api/oauth")
     async def admin_api_oauth_list(request: Request) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         names: list[str] = []
         for name, up in state.config.upstreams.items():
             if isinstance(up, HttpUpstreamConfig) and isinstance(up.auth, OAuth2AuthConfig):
@@ -1516,12 +1895,12 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
 
     @app.get("/admin/api/oauth/{upstream}/status")
     async def admin_api_oauth_status(request: Request, upstream: str) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         return JSONResponse(state.oauth_manager.status(upstream))
 
     @app.post("/admin/api/oauth/{upstream}/start")
     async def admin_api_oauth_start(request: Request, upstream: str) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         body: dict[str, Any] = {}
         if request.headers.get("content-length") not in (None, "0"):
             try:
@@ -1581,7 +1960,7 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
 
     @app.delete("/admin/api/oauth/{upstream}/token")
     async def admin_api_oauth_revoke(request: Request, upstream: str) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         removed = await state.oauth_manager.revoke_tokens(upstream)
         state.runtime_config.telemetry.emit_nowait(
             {"event": "oauth_revoke", "upstream": upstream, "had_token": removed}
@@ -1590,7 +1969,7 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
 
     @app.post("/admin/api/catalog/install")
     async def admin_api_catalog_install(request: Request) -> JSONResponse:
-        require_admin_auth(request)
+        await require_admin_auth(request)
         if state.catalog is None:
             raise HTTPException(status_code=503, detail="catalog_unavailable")
         body = await request.json()
