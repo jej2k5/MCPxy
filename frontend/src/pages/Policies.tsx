@@ -19,10 +19,20 @@ interface SizePolicy {
   max_request_bytes: number;
 }
 
+interface RedactionPolicy {
+  pii?: boolean;
+  pci?: boolean;
+  redact_request?: boolean;
+  redact_response?: boolean;
+  replacement?: string;
+  custom_patterns?: Record<string, string>;
+}
+
 interface UpstreamPolicies {
   methods?: MethodPolicy | null;
   rate_limit?: RateLimitPolicy | null;
   size?: SizePolicy | null;
+  redaction?: RedactionPolicy | null;
 }
 
 interface PoliciesConfig {
@@ -88,6 +98,7 @@ function PolicyCard({
   const setMethods = (m: MethodPolicy | null) => onChange({ ...policy, methods: m });
   const setRate = (r: RateLimitPolicy | null) => onChange({ ...policy, rate_limit: r });
   const setSize = (s: SizePolicy | null) => onChange({ ...policy, size: s });
+  const setRedaction = (r: RedactionPolicy | null) => onChange({ ...policy, redaction: r });
 
   return (
     <div className="card space-y-4">
@@ -193,6 +204,64 @@ function PolicyCard({
             else setSize({ max_request_bytes: v });
           }}
         />
+      </div>
+
+      <div className="border-t border-surface-700 pt-3">
+        <div className="mb-2 text-xs uppercase tracking-wider text-slate-400">
+          PII / PCI Redaction
+        </div>
+        <div className="flex items-center gap-2 mb-2">
+          <label className="flex items-center gap-2 text-sm text-slate-300">
+            <input
+              type="checkbox"
+              checked={!!policy.redaction}
+              onChange={(e) => {
+                if (e.target.checked) {
+                  setRedaction({ pii: true, pci: true, redact_request: true, redact_response: true });
+                } else {
+                  setRedaction(null);
+                }
+              }}
+            />
+            Enable redaction
+          </label>
+        </div>
+        {policy.redaction && (
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              <input
+                type="checkbox"
+                checked={policy.redaction.pii !== false}
+                onChange={(e) => setRedaction({ ...policy.redaction!, pii: e.target.checked })}
+              />
+              PII
+            </label>
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              <input
+                type="checkbox"
+                checked={policy.redaction.pci !== false}
+                onChange={(e) => setRedaction({ ...policy.redaction!, pci: e.target.checked })}
+              />
+              PCI
+            </label>
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              <input
+                type="checkbox"
+                checked={policy.redaction.redact_request !== false}
+                onChange={(e) => setRedaction({ ...policy.redaction!, redact_request: e.target.checked })}
+              />
+              Requests
+            </label>
+            <label className="flex items-center gap-2 text-sm text-slate-300">
+              <input
+                type="checkbox"
+                checked={policy.redaction.redact_response !== false}
+                onChange={(e) => setRedaction({ ...policy.redaction!, redact_response: e.target.checked })}
+              />
+              Responses
+            </label>
+          </div>
+        )}
       </div>
     </div>
   );

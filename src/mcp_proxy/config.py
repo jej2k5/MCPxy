@@ -272,12 +272,60 @@ class SizePolicy(BaseModel):
     max_request_bytes: int = Field(gt=0)
 
 
+class RedactionPolicy(BaseModel):
+    """PII / PCI data redaction policy.
+
+    When enabled, the proxy scans every string value in JSON-RPC
+    request and response payloads for sensitive data patterns and
+    replaces matches with a redaction marker before the message
+    crosses a trust boundary.
+
+    Built-in categories (toggle individually):
+
+    * **pii** — email addresses, phone numbers, US Social Security
+      Numbers, IPv4 addresses.
+    * **pci** — credit/debit card numbers (Visa, Mastercard, Amex,
+      Discover), CVV codes, and MM/YY expiry dates.
+
+    Operators can also supply ``custom_patterns``: a dict mapping a
+    label (used in audit logs) to a Python regex string. Every
+    pattern is compiled once at config-apply time; invalid regexes
+    fail validation.
+
+    ``redact_request`` / ``redact_response`` control directionality.
+    Most deployments want both ``true`` (the default when the policy
+    is present), but operators sending to a trusted internal upstream
+    may disable request redaction and only scrub responses.
+    """
+
+    pii: bool = True
+    pci: bool = True
+    redact_request: bool = True
+    redact_response: bool = True
+    replacement: str = "[REDACTED]"
+    custom_patterns: dict[str, str] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_custom_patterns(self) -> "RedactionPolicy":
+        import re
+
+        for label, pattern in self.custom_patterns.items():
+            try:
+                re.compile(pattern)
+            except re.error as exc:
+                raise ValueError(
+                    f"custom_patterns[{label!r}]: invalid regex: {exc}"
+                ) from exc
+        return self
+
+
 class UpstreamPolicies(BaseModel):
     """Policies applicable at a given scope (global or per-upstream)."""
 
     methods: MethodPolicy | None = None
     rate_limit: RateLimitPolicy | None = None
     size: SizePolicy | None = None
+    redaction: RedactionPolicy | None = None
 
 
 class PoliciesConfig(BaseModel):

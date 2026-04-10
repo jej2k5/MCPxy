@@ -1,20 +1,22 @@
-"""Policy engine: method ACLs, rate limiting, and size caps."""
+"""Policy engine: method ACLs, rate limiting, size caps, and redaction."""
 
 from __future__ import annotations
 
 import fnmatch
 import time
-from dataclasses import dataclass
-from typing import Any
+from dataclasses import dataclass, field
+from typing import Any, Callable
 
 from mcp_proxy.config import (
     AppConfig,
     MethodPolicy,
     PoliciesConfig,
     RateLimitPolicy,
+    RedactionPolicy,
     SizePolicy,
     UpstreamPolicies,
 )
+from mcp_proxy.policy.redaction import build_redactor
 
 
 @dataclass
@@ -83,6 +85,9 @@ class PolicyEngine:
         # Bucket map keyed by (upstream, scope, scope_key).
         self._buckets: dict[tuple[str, str, str], TokenBucket] = {}
         self._last_access: dict[tuple[str, str, str], float] = {}
+        # Compiled redactors cached per-upstream (rebuilt on config change).
+        self._redactors: dict[str, Callable[[dict[str, Any]], dict[str, Any]] | None] = {}
+        self._rebuild_redactors()
 
     def replace_config(self, config: AppConfig) -> None:
         """Apply a new config atomically.
@@ -94,6 +99,11 @@ class PolicyEngine:
         if not self._policies.per_upstream and self._policies.global_ is None:
             self._buckets.clear()
             self._last_access.clear()
+        self._rebuild_redactors()
+
+    def _rebuild_redactors(self) -> None:
+        """Compile redaction functions from the current policy config."""
+        self._redactors.clear()
 
     # ---------------------------------------------------------------
     # Public API
@@ -130,6 +140,40 @@ class PolicyEngine:
 
         return PolicyDecision.allow()
 
+    def redact_request(self, upstream: str, message: dict[str, Any]) -> dict[str, Any]:
+        """Apply PII/PCI redaction to an outgoing request payload (in-place)."""
+        redactor = self._get_redactor(upstream)
+        if redactor is None:
+            return message
+        resolved = self._resolve_for(upstream)
+        if resolved.redaction and not resolved.redaction.redact_request:
+            return message
+        return redactor(message)
+
+    def redact_response(self, upstream: str, message: dict[str, Any]) -> dict[str, Any]:
+        """Apply PII/PCI redaction to an incoming response payload (in-place)."""
+        redactor = self._get_redactor(upstream)
+        if redactor is None:
+            return message
+        resolved = self._resolve_for(upstream)
+        if resolved.redaction and not resolved.redaction.redact_response:
+            return message
+        return redactor(message)
+
+    def _get_redactor(
+        self, upstream: str
+    ) -> Callable[[dict[str, Any]], dict[str, Any]] | None:
+        """Return the compiled redactor for *upstream*, or None."""
+        if upstream in self._redactors:
+            return self._redactors[upstream]
+        resolved = self._resolve_for(upstream)
+        if resolved.redaction is None:
+            self._redactors[upstream] = None
+            return None
+        redactor = build_redactor(resolved.redaction)
+        self._redactors[upstream] = redactor
+        return redactor
+
     def buckets_snapshot(self) -> dict[str, Any]:
         return {
             f"{upstream}:{scope}:{key}": bucket.snapshot()
@@ -162,6 +206,7 @@ class PolicyEngine:
             methods=per.methods or global_.methods,
             rate_limit=per.rate_limit or global_.rate_limit,
             size=per.size or global_.size,
+            redaction=per.redaction or global_.redaction,
         )
 
     @staticmethod
