@@ -151,11 +151,11 @@ class AuthnManager:
         if self._underlying is None:
             raise RuntimeError("auth not configured")
         result = await self._underlying.authenticate(
-            provider_name, {"action": "getAuthUrl", "state": state}
+            provider_name, {"action": "get_auth_url", "state": state}
         )
         if result.error:
             raise RuntimeError(result.error)
-        # The URL is returned in the token field for getAuthUrl action
+        # The URL is returned in the token field for get_auth_url action
         return result.token or ""
 
     async def complete_federated(
