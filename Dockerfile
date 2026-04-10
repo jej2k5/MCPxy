@@ -96,7 +96,7 @@ COPY src/ ./src/
 # setuptools' `package-data` glob (`web/dist/**/*`) picks it up.
 COPY --from=frontend /build/src/mcpxy_proxy/web/dist/ ./src/mcpxy_proxy/web/dist/
 
-RUN /opt/mcpxy/.venv/bin/pip install --no-cache-dir .
+RUN /opt/mcpxy/.venv/bin/pip install --no-cache-dir ".[postgres,mysql]"
 
 # The config path and listen address are parameterised via env so operators
 # can override without rebuilding; the entrypoint script below reads them.
