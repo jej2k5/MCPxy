@@ -1280,7 +1280,7 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
         admin_section = merged.setdefault("admin", {})
         admin_section["require_token"] = False
         try:
-            version = state.runtime_config.apply(
+            version = await state.runtime_config.apply(
                 merged, source="onboarding.set_authy_config"
             )
         except Exception as exc:
