@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from cryptography.fernet import Fernet
 
-from mcp_proxy.authn.users import mint_pat, verify_pat
-from mcp_proxy.storage.config_store import open_store
+from mcpxy_proxy.authn.users import mint_pat, verify_pat
+from mcpxy_proxy.storage.config_store import open_store
 
 
 def _make_store(tmp_path):
@@ -23,7 +23,7 @@ def test_mint_and_verify_pat(tmp_path):
         email="dev@x.com", provider="local", role="member", activated=True,
     )
     record, plaintext = mint_pat(store, user_id=user.id, name="test token")
-    assert plaintext.startswith("mcpy_pat_")
+    assert plaintext.startswith("mcpxy_pat_")
     assert record.token_prefix == plaintext[:8]
 
     # Verify succeeds
@@ -38,7 +38,7 @@ def test_verify_wrong_plaintext(tmp_path):
         email="dev@x.com", provider="local", role="member", activated=True,
     )
     mint_pat(store, user_id=user.id, name="tok")
-    assert verify_pat(store, "mcpy_pat_totally_wrong_token") is None
+    assert verify_pat(store, "mcpxy_pat_totally_wrong_token") is None
 
 
 def test_verify_revoked_pat(tmp_path):

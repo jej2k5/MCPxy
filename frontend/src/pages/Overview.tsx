@@ -103,7 +103,7 @@ export default function Overview() {
         <div>
           <h1 className="text-2xl font-semibold text-slate-100">Overview</h1>
           <p className="text-sm text-slate-400">
-            Live snapshot of MCPy health and traffic
+            Live snapshot of MCPxy health and traffic
           </p>
         </div>
         <div className="text-xs text-slate-500">

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from mcp_proxy.install.clients import (
+from mcpxy_proxy.install.clients import (
     ChatGPTAdapter,
     ClaudeCodeAdapter,
     ClaudeDesktopAdapter,
@@ -30,9 +30,9 @@ def test_get_adapter_unknown_raises() -> None:
 
 def test_claude_desktop_format_entry_uses_stdio_adapter_command() -> None:
     adapter = ClaudeDesktopAdapter()
-    opts = InstallOptions(name="mcpy", url="http://127.0.0.1:8000", token_env="MCP_PROXY_TOKEN")
+    opts = InstallOptions(name="mcpxy", url="http://127.0.0.1:8000", token_env="MCP_PROXY_TOKEN")
     entry = adapter.format_entry(opts)
-    assert entry["command"] == "mcp-proxy"
+    assert entry["command"] == "mcpxy-proxy"
     assert entry["args"][0] == "stdio"
     assert "--connect" in entry["args"]
     assert "http://127.0.0.1:8000" in entry["args"]
@@ -44,18 +44,18 @@ def test_claude_desktop_format_entry_uses_stdio_adapter_command() -> None:
 
 def test_claude_desktop_merge_creates_or_updates_entry_idempotently() -> None:
     adapter = ClaudeDesktopAdapter()
-    opts = InstallOptions(name="mcpy", url="http://localhost:9000")
+    opts = InstallOptions(name="mcpxy", url="http://localhost:9000")
 
     # Empty file
     merged = adapter.merge(None, opts)
     assert "mcpServers" in merged
-    assert "mcpy" in merged["mcpServers"]
+    assert "mcpxy" in merged["mcpServers"]
 
     # Existing config with another server is preserved.
     existing = {"mcpServers": {"other": {"command": "x", "args": []}}}
     merged2 = adapter.merge(existing, opts)
     assert "other" in merged2["mcpServers"]
-    assert "mcpy" in merged2["mcpServers"]
+    assert "mcpxy" in merged2["mcpServers"]
 
     # Reapply (idempotent — same shape).
     merged3 = adapter.merge(merged2, opts)
@@ -64,10 +64,10 @@ def test_claude_desktop_merge_creates_or_updates_entry_idempotently() -> None:
 
 def test_claude_desktop_diff_shows_added_entry(tmp_path: Path) -> None:
     adapter = ClaudeDesktopAdapter()
-    opts = InstallOptions(name="mcpy", url="http://localhost")
+    opts = InstallOptions(name="mcpxy", url="http://localhost")
     diff = adapter.diff(None, adapter.merge(None, opts))
     assert "mcpServers" in diff
-    assert "mcpy" in diff
+    assert "mcpxy" in diff
 
 
 # ---------- Claude Code -------------------------------------------------------

@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from mcp_proxy.config import (
+from mcpxy_proxy.config import (
     AppConfig,
     TlsConfig,
     _apply_expansions,
@@ -11,11 +11,11 @@ from mcp_proxy.config import (
     redact_secrets,
     validate_config_payload,
 )
-from mcp_proxy.proxy.admin import AdminService
-from mcp_proxy.proxy.manager import PluginRegistry, UpstreamManager
-from mcp_proxy.runtime import RuntimeConfigManager
+from mcpxy_proxy.proxy.admin import AdminService
+from mcpxy_proxy.proxy.manager import PluginRegistry, UpstreamManager
+from mcpxy_proxy.runtime import RuntimeConfigManager
 
-from mcp_proxy.proxy.base import UpstreamTransport
+from mcpxy_proxy.proxy.base import UpstreamTransport
 
 
 class DummyTransport(UpstreamTransport):
@@ -41,8 +41,8 @@ class DummyTransport(UpstreamTransport):
     def health(self):
         return {"ok": True}
 
-from mcp_proxy.telemetry.noop_sink import NoopTelemetrySink
-from mcp_proxy.telemetry.pipeline import TelemetryPipeline
+from mcpxy_proxy.telemetry.noop_sink import NoopTelemetrySink
+from mcpxy_proxy.telemetry.pipeline import TelemetryPipeline
 
 
 class DummyManager:
@@ -109,10 +109,10 @@ async def test_runtime_apply_persists_to_store(tmp_path) -> None:
     """
     from cryptography.fernet import Fernet
 
-    from mcp_proxy.storage.config_store import ConfigStore
-    from mcp_proxy.storage.db import build_engine, run_migrations
+    from mcpxy_proxy.storage.config_store import ConfigStore
+    from mcpxy_proxy.storage.db import build_engine, run_migrations
 
-    engine = build_engine(f"sqlite:///{tmp_path / 'mcpy.db'}")
+    engine = build_engine(f"sqlite:///{tmp_path / 'mcpxy.db'}")
     run_migrations(engine)
     store = ConfigStore(engine, Fernet(Fernet.generate_key()))
     store.load_all()
@@ -205,15 +205,15 @@ def test_tls_config_loads_and_validates() -> None:
         {
             "tls": {
                 "enabled": True,
-                "certfile": "/etc/mcpy/cert.pem",
-                "keyfile": "/etc/mcpy/key.pem",
+                "certfile": "/etc/mcpxy/cert.pem",
+                "keyfile": "/etc/mcpxy/key.pem",
             },
             "upstreams": {},
         }
     )
     assert cfg.tls.enabled is True
-    assert cfg.tls.certfile == "/etc/mcpy/cert.pem"
-    assert cfg.tls.keyfile == "/etc/mcpy/key.pem"
+    assert cfg.tls.certfile == "/etc/mcpxy/cert.pem"
+    assert cfg.tls.keyfile == "/etc/mcpxy/key.pem"
 
 
 def test_tls_config_allows_staged_values_when_disabled() -> None:
@@ -223,14 +223,14 @@ def test_tls_config_allows_staged_values_when_disabled() -> None:
         {
             "tls": {
                 "enabled": False,
-                "certfile": "/etc/mcpy/cert.pem",
-                "keyfile": "/etc/mcpy/key.pem",
+                "certfile": "/etc/mcpxy/cert.pem",
+                "keyfile": "/etc/mcpxy/key.pem",
             },
             "upstreams": {},
         }
     )
     assert cfg.tls.enabled is False
-    assert cfg.tls.certfile == "/etc/mcpy/cert.pem"
+    assert cfg.tls.certfile == "/etc/mcpxy/cert.pem"
 
 
 def test_tls_config_enabled_requires_certfile_and_keyfile() -> None:
@@ -253,8 +253,8 @@ def test_tls_config_keyfile_password_env_expansion(monkeypatch, tmp_path) -> Non
             {
                 "tls": {
                     "enabled": True,
-                    "certfile": "/etc/mcpy/cert.pem",
-                    "keyfile": "/etc/mcpy/key.pem",
+                    "certfile": "/etc/mcpxy/cert.pem",
+                    "keyfile": "/etc/mcpxy/key.pem",
                     "keyfile_password": "${env:TLS_PW}",
                 },
                 "upstreams": {},
@@ -269,8 +269,8 @@ def test_tls_config_keyfile_password_secret_expansion() -> None:
     payload = {
         "tls": {
             "enabled": True,
-            "certfile": "/etc/mcpy/cert.pem",
-            "keyfile": "/etc/mcpy/key.pem",
+            "certfile": "/etc/mcpxy/cert.pem",
+            "keyfile": "/etc/mcpxy/key.pem",
             "keyfile_password": "${secret:TLS_PW}",
         },
         "upstreams": {},
@@ -288,8 +288,8 @@ def test_redact_secrets_redacts_tls_keyfile_password() -> None:
     payload = {
         "tls": {
             "enabled": True,
-            "certfile": "/etc/mcpy/cert.pem",
-            "keyfile": "/etc/mcpy/key.pem",
+            "certfile": "/etc/mcpxy/cert.pem",
+            "keyfile": "/etc/mcpxy/key.pem",
             "keyfile_password": "hunter2",
         },
         "upstreams": {},
@@ -297,7 +297,7 @@ def test_redact_secrets_redacts_tls_keyfile_password() -> None:
     redacted = redact_secrets(payload)
     assert redacted["tls"]["keyfile_password"] == "***REDACTED***"
     # Non-secret tls fields stay visible.
-    assert redacted["tls"]["certfile"] == "/etc/mcpy/cert.pem"
+    assert redacted["tls"]["certfile"] == "/etc/mcpxy/cert.pem"
     assert redacted["tls"]["enabled"] is True
     # The original payload is not mutated.
     assert payload["tls"]["keyfile_password"] == "hunter2"

@@ -1,11 +1,11 @@
-# MCPy Proxy Design
+# MCPxy Proxy Design
 
 ## Source layout
 
-- Runtime/server entrypoint: `src/mcp_proxy/server.py`
-- Plugin registry: `src/mcp_proxy/plugins/registry.py`
-- Admin web template: `src/mcp_proxy/web/templates/admin.html`
-- Admin static assets: `src/mcp_proxy/web/static/admin.css`, `src/mcp_proxy/web/static/admin.js`
+- Runtime/server entrypoint: `src/mcpxy_proxy/server.py`
+- Plugin registry: `src/mcpxy_proxy/plugins/registry.py`
+- Admin web template: `src/mcpxy_proxy/web/templates/admin.html`
+- Admin static assets: `src/mcpxy_proxy/web/static/admin.css`, `src/mcpxy_proxy/web/static/admin.js`
 
 ## Routing and control plane
 

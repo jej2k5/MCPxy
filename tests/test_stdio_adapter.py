@@ -1,4 +1,4 @@
-"""Tests for the stdio adapter mode that forwards JSON-RPC to MCPy HTTP."""
+"""Tests for the stdio adapter mode that forwards JSON-RPC to MCPxy HTTP."""
 
 import asyncio
 import json
@@ -6,7 +6,7 @@ import json
 import httpx
 import pytest
 
-from mcp_proxy.stdio_adapter import _build_endpoint, _bearer_headers, _forward
+from mcpxy_proxy.stdio_adapter import _build_endpoint, _bearer_headers, _forward
 
 
 def test_build_endpoint_default_mount_path() -> None:

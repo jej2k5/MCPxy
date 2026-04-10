@@ -30,7 +30,7 @@ tests
 # and avoids host-side stale builds from leaking into the image.
 frontend/node_modules
 frontend/dist
-src/mcp_proxy/web/dist
+src/mcpxy_proxy/web/dist
 
 # Local dev state
 *.log

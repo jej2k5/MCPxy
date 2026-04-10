@@ -79,7 +79,7 @@ export default function Import() {
           <p className="text-sm text-slate-400">
             MCP servers detected in Claude Desktop, Claude Code, Cursor,
             Windsurf, and Continue config files on this machine. Select the
-            ones you want to bring into MCPy.
+            ones you want to bring into MCPxy.
           </p>
         </div>
         <button className="btn" onClick={reload}>

@@ -2,7 +2,7 @@ import time
 
 import pytest
 
-from mcp_proxy.config import (
+from mcpxy_proxy.config import (
     AppConfig,
     MethodPolicy,
     PoliciesConfig,
@@ -10,7 +10,7 @@ from mcp_proxy.config import (
     SizePolicy,
     UpstreamPolicies,
 )
-from mcp_proxy.policy.engine import PolicyEngine, TokenBucket
+from mcpxy_proxy.policy.engine import PolicyEngine, TokenBucket
 
 
 def _config(policies: PoliciesConfig) -> AppConfig:
@@ -220,11 +220,11 @@ def test_evict_idle_buckets_removes_stale_client_buckets() -> None:
 
 @pytest.mark.asyncio
 async def test_bridge_blocks_denied_request_and_records_traffic() -> None:
-    from mcp_proxy.jsonrpc import JsonRpcError
-    from mcp_proxy.observability.traffic import TrafficRecorder
-    from mcp_proxy.proxy.base import UpstreamTransport
-    from mcp_proxy.proxy.bridge import ProxyBridge
-    from mcp_proxy.proxy.manager import PluginRegistry, UpstreamManager
+    from mcpxy_proxy.jsonrpc import JsonRpcError
+    from mcpxy_proxy.observability.traffic import TrafficRecorder
+    from mcpxy_proxy.proxy.base import UpstreamTransport
+    from mcpxy_proxy.proxy.bridge import ProxyBridge
+    from mcpxy_proxy.proxy.manager import PluginRegistry, UpstreamManager
 
     class OkTransport(UpstreamTransport):
         def __init__(self, name, settings):

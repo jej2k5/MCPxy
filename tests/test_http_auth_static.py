@@ -14,14 +14,14 @@ import httpx
 import pytest
 from pydantic import ValidationError
 
-from mcp_proxy.auth.strategies import (
+from mcpxy_proxy.auth.strategies import (
     BasicAuthStrategy,
     BearerAuthStrategy,
     HeaderAuthStrategy,
     NoAuthStrategy,
     build_strategy,
 )
-from mcp_proxy.config import (
+from mcpxy_proxy.config import (
     ApiKeyAuthConfig,
     BasicAuthConfig,
     BearerAuthConfig,
@@ -29,7 +29,7 @@ from mcp_proxy.config import (
     NoAuthConfig,
     OAuth2AuthConfig,
 )
-from mcp_proxy.proxy.http import HttpUpstreamTransport
+from mcpxy_proxy.proxy.http import HttpUpstreamTransport
 
 
 # ---------------------------------------------------------------------------
@@ -268,11 +268,11 @@ async def test_auth_headers_merge_with_explicit_headers() -> None:
         {
             "type": "http",
             "url": "https://x.invalid/mcp",
-            "headers": {"X-Request-Source": "mcpy-test"},
+            "headers": {"X-Request-Source": "mcpxy-test"},
             "auth": {"type": "bearer", "token": "tkn"},
         }
     )
-    assert headers["x-request-source"] == "mcpy-test"
+    assert headers["x-request-source"] == "mcpxy-test"
     assert headers["authorization"] == "Bearer tkn"
 
 

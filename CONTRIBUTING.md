@@ -9,7 +9,7 @@
    ```
 3. Run the proxy locally:
    ```bash
-   mcp-proxy --config config.example.json
+   mcpxy-proxy --config config.example.json
    ```
 
 ## How to Run Tests
@@ -23,10 +23,10 @@ pytest
 
 Keep these paths stable when editing architecture and admin UI assets:
 - `docs/Design.md`
-- `src/mcp_proxy/plugins/registry.py`
-- `src/mcp_proxy/web/templates/admin.html`
-- `src/mcp_proxy/web/static/admin.css`
-- `src/mcp_proxy/web/static/admin.js`
+- `src/mcpxy_proxy/plugins/registry.py`
+- `src/mcpxy_proxy/web/templates/admin.html`
+- `src/mcpxy_proxy/web/static/admin.css`
+- `src/mcpxy_proxy/web/static/admin.js`
 
 ## Targeted Test Commands
 

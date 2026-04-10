@@ -1,23 +1,23 @@
-# MCPy Docker Compose deployment.
+# MCPxy Docker Compose deployment.
 #
 # Brings up the proxy (FastAPI backend + React dashboard) on :8000, with
 # the config file bind-mounted from deploy/docker/config.json and runtime
-# state persisted in the mcpy_data named volume.
+# state persisted in the mcpxy_data named volume.
 #
-# MCPy serves HTTPS by default using an auto-generated self-signed cert
-# cached under /var/lib/mcpy/tls/ (persisted across restarts by the
-# mcpy_data volume). Clients must pass `-k` (or trust the cert) to
+# MCPxy serves HTTPS by default using an auto-generated self-signed cert
+# cached under /var/lib/mcpxy/tls/ (persisted across restarts by the
+# mcpxy_data volume). Clients must pass `-k` (or trust the cert) to
 # connect:
 #
 #     curl -k https://127.0.0.1:8000/health
-#     mcp-proxy install --client claude_desktop --url https://127.0.0.1:8000
+#     mcpxy-proxy install --client claude_desktop --url https://127.0.0.1:8000
 #
 # For a real TLS cert, mount it into the container and add
 # `--ssl-certfile` / `--ssl-keyfile` to the entrypoint command (or set
 # `tls.certfile` / `tls.keyfile` in config.json). To serve plain HTTP
 # instead, append `--no-tls` to the service command.
 #
-# The desktop install helpers (`mcp-proxy install ...`) run on the HOST,
+# The desktop install helpers (`mcpxy-proxy install ...`) run on the HOST,
 # not in the container, because they write to host client config files
 # (Claude Desktop, Cursor, Continue, ...).
 #
@@ -25,26 +25,26 @@
 # leave it empty to run the proxy unauthenticated (dev only).
 
 services:
-  mcpy:
+  mcpxy:
     build:
       context: .
       dockerfile: Dockerfile
-    image: mcpy:local
-    container_name: mcpy
+    image: mcpxy:local
+    container_name: mcpxy
     restart: unless-stopped
     ports:
-      - "${MCPY_HOST_PORT:-8000}:8000"
+      - "${MCPXY_HOST_PORT:-8000}:8000"
     environment:
       MCP_PROXY_TOKEN: ${MCP_PROXY_TOKEN:-}
-      MCPY_CONFIG: /etc/mcpy/config.json
-      MCPY_LISTEN: 0.0.0.0:8000
-      MCPY_ONBOARDING_ALLOWED_CLIENTS: "127.0.0.1,::1,172.66.0.0/16"
+      MCPXY_CONFIG: /etc/mcpxy/config.json
+      MCPXY_LISTEN: 0.0.0.0:8000
+      MCPXY_ONBOARDING_ALLOWED_CLIENTS: "127.0.0.1,::1,172.66.0.0/16"
     volumes:
       # Config is bind-mounted read-only. Edit on the host; restart to apply
       # anything the runtime config watcher doesn't hot-reload.
-      - ./deploy/docker/config.json:/etc/mcpy/config.json:ro
+      - ./deploy/docker/config.json:/etc/mcpxy/config.json:ro
       # Runtime state: file-drop watcher directory, telemetry buffers, etc.
-      - mcpy_data:/var/lib/mcpy
+      - mcpxy_data:/var/lib/mcpxy
     # HTTPS by default; -k accepts the auto-generated self-signed cert.
     # If you run the service with `--no-tls`, change this back to
     # http:// and drop the `-k` flag.
@@ -56,4 +56,4 @@ services:
       start_period: 20s
 
 volumes:
-  mcpy_data:
+  mcpxy_data:

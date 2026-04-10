@@ -1,5 +1,5 @@
-from mcp_proxy.config import AppConfig
-from mcp_proxy.routing import resolve_upstream
+from mcpxy_proxy.config import AppConfig
+from mcpxy_proxy.routing import resolve_upstream
 
 
 def test_routing_precedence() -> None:

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from mcp_proxy.cli import main
+from mcpxy_proxy.cli import main
 
 
 def test_init_writes_starter_config(tmp_path: Path) -> None:
@@ -68,10 +68,10 @@ def test_install_dry_run_for_claude_desktop(tmp_path: Path, capsys) -> None:
     assert rc == 0
     captured = capsys.readouterr()
     assert "would write" in captured.out
-    assert "mcpy" in captured.out
+    assert "mcpxy" in captured.out
     # Original file untouched
     assert "existing" in config.read_text()
-    assert "mcpy" not in config.read_text()
+    assert "mcpxy" not in config.read_text()
 
 
 def test_install_writes_and_creates_backup(tmp_path: Path) -> None:
@@ -90,7 +90,7 @@ def test_install_writes_and_creates_backup(tmp_path: Path) -> None:
     )
     assert rc == 0
     data = json.loads(config.read_text())
-    assert "mcpy" in data["mcpServers"]
+    assert "mcpxy" in data["mcpServers"]
     assert "old" in data["mcpServers"]
     backups = list(tmp_path.glob("claude_desktop_config.json.bak.*"))
     assert backups, "expected a backup file to be created"
@@ -122,7 +122,7 @@ def test_install_idempotent_does_not_duplicate(tmp_path: Path) -> None:
         ]
     )
     data = json.loads(config.read_text())
-    assert list(data["mcpServers"].keys()).count("mcpy") == 1
+    assert list(data["mcpServers"].keys()).count("mcpxy") == 1
 
 
 def test_install_chatgpt_prints_snippet(capsys) -> None:

@@ -51,7 +51,7 @@ interface EdgeStats {
   errEWMA: number;
 }
 
-const PROXY_ID = "__mcpy_proxy__";
+const PROXY_ID = "__mcpxy_proxy__";
 const VIEW_W = 800;
 const VIEW_H = 600;
 const CENTER_X = VIEW_W / 2;
@@ -353,7 +353,7 @@ export default function Graph() {
     {
       id: PROXY_ID,
       kind: "proxy",
-      label: "MCPy",
+      label: "MCPxy",
       x: proxyPos.x,
       y: proxyPos.y,
       radius: 46,
@@ -408,7 +408,7 @@ export default function Graph() {
         <div>
           <h1 className="text-2xl font-semibold text-slate-100">Graph</h1>
           <p className="text-sm text-slate-400">
-            Real-time topology of traffic flowing from MCPy to upstream servers
+            Real-time topology of traffic flowing from MCPxy to upstream servers
           </p>
         </div>
         <div className="flex items-center gap-3">

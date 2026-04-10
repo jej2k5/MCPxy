@@ -24,15 +24,15 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from mcp_proxy.auth.oauth import OAuthManager
-from mcp_proxy.config import AppConfig
-from mcp_proxy.plugins.registry import PluginRegistry
-from mcp_proxy.proxy.bridge import ProxyBridge
-from mcp_proxy.proxy.manager import UpstreamManager
-from mcp_proxy.secrets import SecretsManager
-from mcp_proxy.server import AppState, create_app
-from mcp_proxy.telemetry.noop_sink import NoopTelemetrySink
-from mcp_proxy.telemetry.pipeline import TelemetryPipeline
+from mcpxy_proxy.auth.oauth import OAuthManager
+from mcpxy_proxy.config import AppConfig
+from mcpxy_proxy.plugins.registry import PluginRegistry
+from mcpxy_proxy.proxy.bridge import ProxyBridge
+from mcpxy_proxy.proxy.manager import UpstreamManager
+from mcpxy_proxy.secrets import SecretsManager
+from mcpxy_proxy.server import AppState, create_app
+from mcpxy_proxy.telemetry.noop_sink import NoopTelemetrySink
+from mcpxy_proxy.telemetry.pipeline import TelemetryPipeline
 
 from tests.test_oauth_flow import MockAuthServer, _build_transport_router
 

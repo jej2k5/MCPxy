@@ -1,18 +1,18 @@
-# MCPy — one URL for every MCP server
+# MCPxy — one URL for every MCP server
 
-**Stop configuring the same MCP servers five different ways.** MCPy is a
+**Stop configuring the same MCP servers five different ways.** MCPxy is a
 multi-upstream MCP proxy that sits between your clients (Claude Desktop,
 Claude Code, Cursor, Windsurf, Continue, ChatGPT) and every MCP server you
-use. Run MCPy once, point every client at it, and manage everything from a
+use. Run MCPxy once, point every client at it, and manage everything from a
 single live dashboard.
 
-![MCPy dashboard](docs/screenshots/dashboard-overview.png)
+![MCPxy dashboard](docs/screenshots/dashboard-overview.png)
 
-## Why MCPy
+## Why MCPxy
 
 Every MCP client keeps its own private list of servers. Installing a new
 server — or rotating a token, or debugging a misbehaving one — means
-editing a JSON file in a different location for each client. MCPy
+editing a JSON file in a different location for each client. MCPxy
 consolidates that into one endpoint and one dashboard: install servers
 from a bundled catalog with one click, see live traffic across every
 client, enforce policies, rotate secrets, and hot-reload without
@@ -50,8 +50,8 @@ restarting anything.
 ## Quickstart
 
 ```bash
-pip install mcpy-proxy
-mcp-proxy serve
+pip install mcpxy-proxy
+mcpxy-proxy serve
 ```
 
 Open <http://127.0.0.1:8000/admin>. On first run the Onboarding wizard
@@ -62,21 +62,21 @@ your first client. That's it.
 Running from source:
 
 ```bash
-git clone https://github.com/jej2k5/mcpy && cd mcpy
+git clone https://github.com/jej2k5/mcpxy && cd mcpxy
 python -m venv .venv && source .venv/bin/activate
 pip install -e .[dev]
-mcp-proxy serve
+mcpxy-proxy serve
 ```
 
 ## Connect a client
 
 ```bash
-mcp-proxy install --client claude-desktop
-mcp-proxy install --client claude-code
-mcp-proxy install --client chatgpt
+mcpxy-proxy install --client claude-desktop
+mcpxy-proxy install --client claude-code
+mcpxy-proxy install --client chatgpt
 ```
 
-Each command backs up the target client's config and registers MCPy as
+Each command backs up the target client's config and registers MCPxy as
 an MCP server. The dashboard's **Connect** page shows the same commands
 and copy-paste snippets for each client.
 
@@ -90,8 +90,8 @@ The image bundles Node (for `npx`-based catalog entries like
 `filesystem`, `github`, `puppeteer`) and `uv`/`uvx` (for Python-based
 entries like `mcp-server-git`), so every catalog entry installs from the
 dashboard with zero host dependencies. Config is mounted read-only at
-`/etc/mcpy/config.json`; runtime state lives in the `mcpy_data` volume.
-The install CLI (`mcp-proxy install --client ...`) writes to your host's
+`/etc/mcpxy/config.json`; runtime state lives in the `mcpxy_data` volume.
+The install CLI (`mcpxy-proxy install --client ...`) writes to your host's
 client config files and must run on the host, not inside the container.
 
 ## Dashboard tour
@@ -109,9 +109,9 @@ client config files and must run on the host, not inside the container.
 ## Configuration
 
 The active config lives in the local DB (default:
-`sqlite:///~/.mcpy/mcpy.db`, override with `MCPY_DB_URL`). Bootstrap
-from a JSON file with `mcp-proxy serve --config config.json` on first
-run, or `mcp-proxy config import config.json` at any time. A minimal
+`sqlite:///~/.mcpxy/mcpxy.db`, override with `MCPXY_DB_URL`). Bootstrap
+from a JSON file with `mcpxy-proxy serve --config config.json` on first
+run, or `mcpxy-proxy config import config.json` at any time. A minimal
 config looks like:
 
 ```json
@@ -131,25 +131,25 @@ entry points, and architecture diagrams.
 
 ## Serving HTTPS
 
-**MCPy serves HTTPS by default.** On first run, `mcp-proxy serve`
+**MCPxy serves HTTPS by default.** On first run, `mcpxy-proxy serve`
 auto-generates a self-signed certificate for `localhost`, `127.0.0.1`,
 and `::1` and caches it under `<state-dir>/tls/cert.pem` +
-`<state-dir>/tls/key.pem` (default state dir: `~/.mcpy`). Subsequent
+`<state-dir>/tls/key.pem` (default state dir: `~/.mcpxy`). Subsequent
 runs reuse the same cert. Clients need to pass `-k` to curl, or trust
 the cert via their OS keychain, until you swap in a real one.
 
 ```bash
-mcp-proxy serve                              # HTTPS with auto-gen cert
+mcpxy-proxy serve                              # HTTPS with auto-gen cert
 curl -k https://127.0.0.1:8000/health
 ```
 
-For production, point MCPy at a real cert/key pair from the command
+For production, point MCPxy at a real cert/key pair from the command
 line:
 
 ```bash
-mcp-proxy serve --listen 0.0.0.0:8443 \
-    --ssl-certfile /etc/mcpy/cert.pem \
-    --ssl-keyfile /etc/mcpy/key.pem
+mcpxy-proxy serve --listen 0.0.0.0:8443 \
+    --ssl-certfile /etc/mcpxy/cert.pem \
+    --ssl-keyfile /etc/mcpxy/key.pem
 ```
 
 …or from the config file, where the keyfile password can flow through
@@ -160,8 +160,8 @@ in cleartext:
 {
   "tls": {
     "enabled": true,
-    "certfile": "/etc/mcpy/cert.pem",
-    "keyfile": "/etc/mcpy/key.pem",
+    "certfile": "/etc/mcpxy/cert.pem",
+    "keyfile": "/etc/mcpxy/key.pem",
     "keyfile_password": "${secret:TLS_KEY_PW}"
   }
 }
@@ -175,15 +175,15 @@ To opt out of TLS entirely — e.g. behind a reverse proxy that
 terminates TLS upstream — pass `--no-tls`:
 
 ```bash
-mcp-proxy serve --no-tls
+mcpxy-proxy serve --no-tls
 ```
 
 > **Note on MCP clients and self-signed certs.** Client applications
 > (Claude Desktop, Cursor, Continue, ...) won't trust the auto-generated
-> cert out of the box. `mcp-proxy install --client ... --url ...` still
+> cert out of the box. `mcpxy-proxy install --client ... --url ...` still
 > defaults to `http://127.0.0.1:8000`; point it at your HTTPS URL
 > explicitly (`--url https://127.0.0.1:8000`) and either trust the cert
-> in the client's OS keychain or pass `--no-tls` to MCPy if you'd
+> in the client's OS keychain or pass `--no-tls` to MCPxy if you'd
 > rather keep the loopback plaintext.
 
 ### Outbound TLS to upstream MCP servers
@@ -198,9 +198,9 @@ each upstream can carry a `tls` block:
       "type": "http",
       "url": "https://mcp.internal.corp/rpc",
       "tls": {
-        "verify": "/etc/mcpy/corp-ca.pem",
-        "client_cert": "/etc/mcpy/mcpy-client.pem",
-        "client_key": "/etc/mcpy/mcpy-client.key",
+        "verify": "/etc/mcpxy/corp-ca.pem",
+        "client_cert": "/etc/mcpxy/mcpxy-client.pem",
+        "client_key": "/etc/mcpxy/mcpxy-client.key",
         "client_key_password": "${secret:INTERNAL_CLIENT_KEY_PW}"
       }
     }
@@ -225,32 +225,32 @@ TLS settings are **not hot-reloadable** — the listener's SSL context is
 bound at startup, so the atomic-apply pipeline rejects any config
 change that alters the `tls` block with a clear "restart required"
 error. For production deployments that need certificate auto-rotation
-(Let's Encrypt, etc.), fronting MCPy with nginx / Caddy / Traefik is
+(Let's Encrypt, etc.), fronting MCPxy with nginx / Caddy / Traefik is
 still the simplest path.
 
 ## CLI reference
 
 ```
-mcp-proxy serve                 Run the proxy + dashboard
-mcp-proxy init                  Generate a starter config file
-mcp-proxy install --client ...  Install MCPy into Claude Desktop / Code / ChatGPT
-mcp-proxy stdio --connect URL   Stdio adapter for stdio-only clients
-mcp-proxy register --name ...   Register an upstream on a running proxy
-mcp-proxy unregister --name ... Remove an upstream
-mcp-proxy discover              Scan local clients for MCP servers
-mcp-proxy import --client ...   Import upstreams from another client
-mcp-proxy catalog list          List bundled catalog entries
-mcp-proxy catalog install ID    Install a catalog entry as an upstream
-mcp-proxy config show           Print the active DB config as JSON
-mcp-proxy config import PATH    Import a JSON config into the DB
-mcp-proxy config export PATH    Export the active DB config to JSON
-mcp-proxy config history        List recent config applies
-mcp-proxy secrets list          List encrypted secrets (values never printed)
-mcp-proxy secrets set NAME      Create or rotate a secret
-mcp-proxy secrets delete NAME   Delete a secret
+mcpxy-proxy serve                 Run the proxy + dashboard
+mcpxy-proxy init                  Generate a starter config file
+mcpxy-proxy install --client ...  Install MCPxy into Claude Desktop / Code / ChatGPT
+mcpxy-proxy stdio --connect URL   Stdio adapter for stdio-only clients
+mcpxy-proxy register --name ...   Register an upstream on a running proxy
+mcpxy-proxy unregister --name ... Remove an upstream
+mcpxy-proxy discover              Scan local clients for MCP servers
+mcpxy-proxy import --client ...   Import upstreams from another client
+mcpxy-proxy catalog list          List bundled catalog entries
+mcpxy-proxy catalog install ID    Install a catalog entry as an upstream
+mcpxy-proxy config show           Print the active DB config as JSON
+mcpxy-proxy config import PATH    Import a JSON config into the DB
+mcpxy-proxy config export PATH    Export the active DB config to JSON
+mcpxy-proxy config history        List recent config applies
+mcpxy-proxy secrets list          List encrypted secrets (values never printed)
+mcpxy-proxy secrets set NAME      Create or rotate a secret
+mcpxy-proxy secrets delete NAME   Delete a secret
 ```
 
-Drop a JSON file into `~/.mcpy/upstreams.d/` and the running proxy picks
+Drop a JSON file into `~/.mcpxy/upstreams.d/` and the running proxy picks
 it up on the next poll; delete it to remove the upstream. Useful for
 provisioning and CI. All three paths — catalog, import, file-drop — go
 through the same atomic apply + rollback pipeline.

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from cryptography.fernet import Fernet
 
-from mcp_proxy.storage.config_store import open_store
-from mcp_proxy.storage.db import known_table_names
-from mcp_proxy.storage.schema import CURRENT_SCHEMA_VERSION
+from mcpxy_proxy.storage.config_store import open_store
+from mcpxy_proxy.storage.db import known_table_names
+from mcpxy_proxy.storage.schema import CURRENT_SCHEMA_VERSION
 
 
 def test_schema_version_is_2():

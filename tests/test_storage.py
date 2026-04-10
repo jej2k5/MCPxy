@@ -14,19 +14,19 @@ from pathlib import Path
 import pytest
 from cryptography.fernet import Fernet
 
-from mcp_proxy.storage.config_store import (
+from mcpxy_proxy.storage.config_store import (
     ConfigStore,
     SecretStoreError,
     open_store,
 )
-from mcp_proxy.storage.db import (
+from mcpxy_proxy.storage.db import (
     DEFAULT_SQLITE_FILENAME,
     build_engine,
     known_table_names,
     resolve_database_url,
     run_migrations,
 )
-from mcp_proxy.storage.schema import CURRENT_SCHEMA_VERSION
+from mcpxy_proxy.storage.schema import CURRENT_SCHEMA_VERSION
 
 
 # ---------------------------------------------------------------------------
@@ -39,15 +39,15 @@ def test_resolve_database_url_uses_explicit_arg() -> None:
 
 
 def test_resolve_database_url_falls_back_to_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MCPY_DB_URL", "sqlite:////tmp/from-env.db")
+    monkeypatch.setenv("MCPXY_DB_URL", "sqlite:////tmp/from-env.db")
     assert resolve_database_url(None) == "sqlite:////tmp/from-env.db"
 
 
 def test_resolve_database_url_default_uses_state_dir(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    monkeypatch.delenv("MCPY_DB_URL", raising=False)
-    monkeypatch.setenv("MCPY_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("MCPXY_DB_URL", raising=False)
+    monkeypatch.setenv("MCPXY_STATE_DIR", str(tmp_path))
     url = resolve_database_url(None)
     assert url.endswith(f"{tmp_path / DEFAULT_SQLITE_FILENAME}")
 
@@ -58,14 +58,14 @@ def test_resolve_database_url_default_uses_state_dir(
 
 
 def test_migrations_create_all_tables(tmp_path: Path) -> None:
-    engine = build_engine(f"sqlite:///{tmp_path / 'mcpy.db'}")
+    engine = build_engine(f"sqlite:///{tmp_path / 'mcpxy.db'}")
     run_migrations(engine)
     tables = set(known_table_names(engine))
     assert {"schema_meta", "config_kv", "config_history", "upstreams", "secrets"} <= tables
 
 
 def test_migrations_are_idempotent(tmp_path: Path) -> None:
-    engine = build_engine(f"sqlite:///{tmp_path / 'mcpy.db'}")
+    engine = build_engine(f"sqlite:///{tmp_path / 'mcpxy.db'}")
     run_migrations(engine)
     run_migrations(engine)  # second call must not raise
     run_migrations(engine)
@@ -73,7 +73,7 @@ def test_migrations_are_idempotent(tmp_path: Path) -> None:
 
 def test_open_store_warms_caches(tmp_path: Path) -> None:
     fernet = Fernet(Fernet.generate_key())
-    store = open_store(f"sqlite:///{tmp_path / 'mcpy.db'}", fernet=fernet)
+    store = open_store(f"sqlite:///{tmp_path / 'mcpxy.db'}", fernet=fernet)
     assert store.is_empty()
     assert store.active_version() == 0
     assert list(store.known_secret_names()) == []
@@ -87,7 +87,7 @@ def test_open_store_warms_caches(tmp_path: Path) -> None:
 
 def test_save_active_config_round_trips(tmp_path: Path) -> None:
     fernet = Fernet(Fernet.generate_key())
-    store = open_store(f"sqlite:///{tmp_path / 'mcpy.db'}", fernet=fernet)
+    store = open_store(f"sqlite:///{tmp_path / 'mcpxy.db'}", fernet=fernet)
     payload = {
         "default_upstream": "fs",
         "auth": {"token_env": "MCP_PROXY_TOKEN"},
@@ -109,7 +109,7 @@ def test_save_active_config_round_trips(tmp_path: Path) -> None:
 
 def test_save_active_config_history_grows(tmp_path: Path) -> None:
     fernet = Fernet(Fernet.generate_key())
-    store = open_store(f"sqlite:///{tmp_path / 'mcpy.db'}", fernet=fernet)
+    store = open_store(f"sqlite:///{tmp_path / 'mcpxy.db'}", fernet=fernet)
     for i in range(3):
         store.save_active_config({"upstreams": {f"u{i}": {"type": "http", "url": "x"}}}, source=f"test#{i}")
     assert store.active_version() == 3
@@ -123,7 +123,7 @@ def test_save_active_config_history_grows(tmp_path: Path) -> None:
 
 def test_save_active_config_resyncs_upstreams_table(tmp_path: Path) -> None:
     fernet = Fernet(Fernet.generate_key())
-    store = open_store(f"sqlite:///{tmp_path / 'mcpy.db'}", fernet=fernet)
+    store = open_store(f"sqlite:///{tmp_path / 'mcpxy.db'}", fernet=fernet)
     store.save_active_config(
         {
             "upstreams": {
@@ -149,7 +149,7 @@ def test_save_active_config_resyncs_upstreams_table(tmp_path: Path) -> None:
 
 def test_upsert_get_delete_secret(tmp_path: Path) -> None:
     fernet = Fernet(Fernet.generate_key())
-    store = open_store(f"sqlite:///{tmp_path / 'mcpy.db'}", fernet=fernet)
+    store = open_store(f"sqlite:///{tmp_path / 'mcpxy.db'}", fernet=fernet)
     store.upsert_secret("github_token", "ghp_abc", description="dev")
     assert store.get_secret("github_token") == "ghp_abc"
     assert store.secret_exists("github_token")
@@ -168,7 +168,7 @@ def test_upsert_get_delete_secret(tmp_path: Path) -> None:
 
 def test_internal_secrets_hidden_from_public_listing(tmp_path: Path) -> None:
     fernet = Fernet(Fernet.generate_key())
-    store = open_store(f"sqlite:///{tmp_path / 'mcpy.db'}", fernet=fernet)
+    store = open_store(f"sqlite:///{tmp_path / 'mcpxy.db'}", fernet=fernet)
     store.upsert_secret("user_token", "real")
     store.upsert_secret("__oauth_token__notion", "internal")
     public = store.list_public_secrets()
@@ -180,7 +180,7 @@ def test_internal_secrets_hidden_from_public_listing(tmp_path: Path) -> None:
 
 def test_secret_validation_rejects_bad_names(tmp_path: Path) -> None:
     fernet = Fernet(Fernet.generate_key())
-    store = open_store(f"sqlite:///{tmp_path / 'mcpy.db'}", fernet=fernet)
+    store = open_store(f"sqlite:///{tmp_path / 'mcpxy.db'}", fernet=fernet)
     for bad in ["", "with space", "has/slash", "dots.in.name", "-leading-dash"]:
         with pytest.raises(SecretStoreError):
             store.upsert_secret(bad, "v")
@@ -189,7 +189,7 @@ def test_secret_validation_rejects_bad_names(tmp_path: Path) -> None:
 
 def test_persistence_across_store_reopen(tmp_path: Path) -> None:
     key = Fernet.generate_key()
-    db_url = f"sqlite:///{tmp_path / 'mcpy.db'}"
+    db_url = f"sqlite:///{tmp_path / 'mcpxy.db'}"
     s1 = open_store(db_url, fernet=Fernet(key))
     s1.save_active_config({"upstreams": {"a": {"type": "http", "url": "x"}}}, source="t")
     s1.upsert_secret("k", "v", description="d")
@@ -214,8 +214,8 @@ def test_bootstrap_imports_seed_file_and_renames_it(
     must import the file, write history, and rename the file to
     ``.migrated``."""
     state_dir = tmp_path / "state"
-    monkeypatch.setenv("MCPY_STATE_DIR", str(state_dir))
-    monkeypatch.setenv("MCPY_SECRETS_KEY", Fernet.generate_key().decode("ascii"))
+    monkeypatch.setenv("MCPXY_STATE_DIR", str(state_dir))
+    monkeypatch.setenv("MCPXY_SECRETS_KEY", Fernet.generate_key().decode("ascii"))
     monkeypatch.setenv("MCP_PROXY_TOKEN", "tok")
 
     seed = tmp_path / "config.json"
@@ -237,7 +237,7 @@ def test_bootstrap_imports_seed_file_and_renames_it(
         )
     )
 
-    from mcp_proxy.cli import build_state
+    from mcpxy_proxy.cli import build_state
 
     state = build_state(str(seed))
     try:
@@ -256,14 +256,14 @@ def test_bootstrap_uses_db_when_already_populated(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     state_dir = tmp_path / "state"
-    monkeypatch.setenv("MCPY_STATE_DIR", str(state_dir))
-    monkeypatch.setenv("MCPY_SECRETS_KEY", Fernet.generate_key().decode("ascii"))
+    monkeypatch.setenv("MCPXY_STATE_DIR", str(state_dir))
+    monkeypatch.setenv("MCPXY_SECRETS_KEY", Fernet.generate_key().decode("ascii"))
     monkeypatch.setenv("MCP_PROXY_TOKEN", "tok")
 
     # Pre-populate the DB directly so build_state sees a non-empty store.
     state_dir.mkdir(parents=True)
-    fernet_key = os.environ["MCPY_SECRETS_KEY"].encode("ascii")
-    pre = open_store(f"sqlite:///{state_dir / 'mcpy.db'}", fernet=Fernet(fernet_key))
+    fernet_key = os.environ["MCPXY_SECRETS_KEY"].encode("ascii")
+    pre = open_store(f"sqlite:///{state_dir / 'mcpxy.db'}", fernet=Fernet(fernet_key))
     pre.save_active_config(
         {
             "auth": {"token_env": "MCP_PROXY_TOKEN"},
@@ -280,7 +280,7 @@ def test_bootstrap_uses_db_when_already_populated(
     )
     pre.close()
 
-    from mcp_proxy.cli import build_state
+    from mcpxy_proxy.cli import build_state
 
     state = build_state(None)
     try:
@@ -295,11 +295,11 @@ def test_bootstrap_writes_default_when_db_empty_and_no_seed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     state_dir = tmp_path / "state"
-    monkeypatch.setenv("MCPY_STATE_DIR", str(state_dir))
-    monkeypatch.setenv("MCPY_SECRETS_KEY", Fernet.generate_key().decode("ascii"))
+    monkeypatch.setenv("MCPXY_STATE_DIR", str(state_dir))
+    monkeypatch.setenv("MCPXY_SECRETS_KEY", Fernet.generate_key().decode("ascii"))
     monkeypatch.setenv("MCP_PROXY_TOKEN", "tok")
 
-    from mcp_proxy.cli import build_state
+    from mcpxy_proxy.cli import build_state
 
     state = build_state(None)
     try:
@@ -329,8 +329,8 @@ def test_bootstrap_seeds_onboarding_when_seed_config_has_no_resolvable_token(
     has no bearer token, regardless of how the config was bootstrapped.
     """
     state_dir = tmp_path / "state"
-    monkeypatch.setenv("MCPY_STATE_DIR", str(state_dir))
-    monkeypatch.setenv("MCPY_SECRETS_KEY", Fernet.generate_key().decode("ascii"))
+    monkeypatch.setenv("MCPXY_STATE_DIR", str(state_dir))
+    monkeypatch.setenv("MCPXY_SECRETS_KEY", Fernet.generate_key().decode("ascii"))
     # Deliberately NOT setting MCP_PROXY_TOKEN — this is the whole point
     # of the regression test.
     monkeypatch.delenv("MCP_PROXY_TOKEN", raising=False)
@@ -352,7 +352,7 @@ def test_bootstrap_seeds_onboarding_when_seed_config_has_no_resolvable_token(
         )
     )
 
-    from mcp_proxy.cli import build_state
+    from mcpxy_proxy.cli import build_state
 
     state = build_state(str(seed))
     try:
@@ -381,8 +381,8 @@ def test_bootstrap_does_not_seed_onboarding_when_token_is_resolvable(
     wizard hijacking their dashboard on boot.
     """
     state_dir = tmp_path / "state"
-    monkeypatch.setenv("MCPY_STATE_DIR", str(state_dir))
-    monkeypatch.setenv("MCPY_SECRETS_KEY", Fernet.generate_key().decode("ascii"))
+    monkeypatch.setenv("MCPXY_STATE_DIR", str(state_dir))
+    monkeypatch.setenv("MCPXY_SECRETS_KEY", Fernet.generate_key().decode("ascii"))
     monkeypatch.setenv("MCP_PROXY_TOKEN", "real-token-value")
 
     seed = tmp_path / "config.json"
@@ -402,7 +402,7 @@ def test_bootstrap_does_not_seed_onboarding_when_token_is_resolvable(
         )
     )
 
-    from mcp_proxy.cli import build_state
+    from mcpxy_proxy.cli import build_state
 
     state = build_state(str(seed))
     try:
@@ -426,8 +426,8 @@ def test_bootstrap_seeds_onboarding_when_token_env_is_empty_string(
     treats empty env vars as unset, so bootstrap still seeds the row.
     """
     state_dir = tmp_path / "state"
-    monkeypatch.setenv("MCPY_STATE_DIR", str(state_dir))
-    monkeypatch.setenv("MCPY_SECRETS_KEY", Fernet.generate_key().decode("ascii"))
+    monkeypatch.setenv("MCPXY_STATE_DIR", str(state_dir))
+    monkeypatch.setenv("MCPXY_SECRETS_KEY", Fernet.generate_key().decode("ascii"))
     # The whole point: env var is present but empty.
     monkeypatch.setenv("MCP_PROXY_TOKEN", "")
 
@@ -448,7 +448,7 @@ def test_bootstrap_seeds_onboarding_when_token_env_is_empty_string(
         )
     )
 
-    from mcp_proxy.cli import build_state
+    from mcpxy_proxy.cli import build_state
 
     state = build_state(str(seed))
     try:

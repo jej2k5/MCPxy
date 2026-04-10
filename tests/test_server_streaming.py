@@ -9,13 +9,13 @@ import pytest
 import uvicorn
 from fastapi.testclient import TestClient
 
-from mcp_proxy.config import AppConfig
-from mcp_proxy.proxy.base import UpstreamTransport
-from mcp_proxy.proxy.bridge import ProxyBridge
-from mcp_proxy.proxy.manager import PluginRegistry, UpstreamManager
-from mcp_proxy.server import AppState, create_app
-from mcp_proxy.telemetry.noop_sink import NoopTelemetrySink
-from mcp_proxy.telemetry.pipeline import TelemetryPipeline
+from mcpxy_proxy.config import AppConfig
+from mcpxy_proxy.proxy.base import UpstreamTransport
+from mcpxy_proxy.proxy.bridge import ProxyBridge
+from mcpxy_proxy.proxy.manager import PluginRegistry, UpstreamManager
+from mcpxy_proxy.server import AppState, create_app
+from mcpxy_proxy.telemetry.noop_sink import NoopTelemetrySink
+from mcpxy_proxy.telemetry.pipeline import TelemetryPipeline
 
 
 class TimedDummyTransport(UpstreamTransport):

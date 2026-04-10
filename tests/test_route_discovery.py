@@ -1,8 +1,8 @@
 import pytest
 
-from mcp_proxy.observability.discovery import RouteDiscoverer
-from mcp_proxy.proxy.base import UpstreamTransport
-from mcp_proxy.proxy.manager import PluginRegistry, UpstreamManager
+from mcpxy_proxy.observability.discovery import RouteDiscoverer
+from mcpxy_proxy.proxy.base import UpstreamTransport
+from mcpxy_proxy.proxy.manager import PluginRegistry, UpstreamManager
 
 
 class ToolListingTransport(UpstreamTransport):

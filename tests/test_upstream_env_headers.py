@@ -18,15 +18,15 @@ from typing import Any
 import httpx
 import pytest
 
-from mcp_proxy.config import (
+from mcpxy_proxy.config import (
     AppConfig,
     HttpUpstreamConfig,
     StdioUpstreamConfig,
     load_config,
     redact_secrets,
 )
-from mcp_proxy.proxy.http import HttpUpstreamTransport
-from mcp_proxy.proxy.stdio import StdioUpstreamTransport
+from mcpxy_proxy.proxy.http import HttpUpstreamTransport
+from mcpxy_proxy.proxy.stdio import StdioUpstreamTransport
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +88,7 @@ async def test_stdio_transport_passes_env_to_child(tmp_path: Path) -> None:
         "import json, os, sys\n"
         "sys.stdin.readline()\n"
         'resp = {"jsonrpc": "2.0", "id": 1, "result": {\n'
-        '    "upstream_env": os.environ.get("MCPY_TEST_TOKEN", "<unset>"),\n'
+        '    "upstream_env": os.environ.get("MCPXY_TEST_TOKEN", "<unset>"),\n'
         '    "proxy_env":    os.environ.get("PATH", "<unset>")[:3],\n'
         "}}\n"
         'sys.stdout.write(json.dumps(resp) + "\\n")\n'
@@ -101,7 +101,7 @@ async def test_stdio_transport_passes_env_to_child(tmp_path: Path) -> None:
             "type": "stdio",
             "command": sys.executable,
             "args": [str(child_script)],
-            "env": {"MCPY_TEST_TOKEN": "s3cret-value"},
+            "env": {"MCPXY_TEST_TOKEN": "s3cret-value"},
         },
     )
     await transport.start()

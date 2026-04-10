@@ -93,7 +93,7 @@ export function TrafficGraph({
       aria-label="MCP proxy traffic topology"
     >
       <defs>
-        <radialGradient id="mcpy-proxy-glow" cx="50%" cy="50%" r="50%">
+        <radialGradient id="mcpxy-proxy-glow" cx="50%" cy="50%" r="50%">
           <stop offset="0%" stopColor={COLORS.accent} stopOpacity="0.35" />
           <stop offset="70%" stopColor={COLORS.accent} stopOpacity="0.05" />
           <stop offset="100%" stopColor={COLORS.accent} stopOpacity="0" />
@@ -150,7 +150,7 @@ export function TrafficGraph({
               onMouseLeave={() => onHoverNode(null)}
               style={{ cursor: "pointer" }}
             >
-              {isProxy && <circle r={110} fill="url(#mcpy-proxy-glow)" pointerEvents="none" />}
+              {isProxy && <circle r={110} fill="url(#mcpxy-proxy-glow)" pointerEvents="none" />}
               {isHovered && (
                 <circle
                   r={n.radius + 6}

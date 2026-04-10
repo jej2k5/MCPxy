@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from mcp_proxy.config import (
+from mcpxy_proxy.config import (
     AppConfig,
     AuthConfig,
     AuthyConfig,
@@ -98,7 +98,7 @@ def test_full_app_config_with_authy():
 
 
 def test_redact_secrets_covers_authy():
-    from mcp_proxy.config import redact_secrets
+    from mcpxy_proxy.config import redact_secrets
 
     payload = {
         "auth": {

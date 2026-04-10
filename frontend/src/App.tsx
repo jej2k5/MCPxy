@@ -95,7 +95,7 @@ export default function App() {
   if (!onboardingResolved) {
     return (
       <div className="flex h-screen items-center justify-center text-slate-400">
-        Connecting to MCPy...
+        Connecting to MCPxy...
       </div>
     );
   }
@@ -119,7 +119,7 @@ export default function App() {
   if (checking) {
     return (
       <div className="flex h-screen items-center justify-center text-slate-400">
-        Connecting to MCPy...
+        Connecting to MCPxy...
       </div>
     );
   }

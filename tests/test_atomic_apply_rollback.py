@@ -1,12 +1,12 @@
 import pytest
 
-from mcp_proxy.config import AppConfig
-from mcp_proxy.plugins.registry import PluginRegistry
-from mcp_proxy.proxy.base import UpstreamTransport
-from mcp_proxy.proxy.manager import UpstreamManager
-from mcp_proxy.runtime import RuntimeConfigManager
-from mcp_proxy.telemetry.noop_sink import NoopTelemetrySink
-from mcp_proxy.telemetry.pipeline import TelemetryPipeline
+from mcpxy_proxy.config import AppConfig
+from mcpxy_proxy.plugins.registry import PluginRegistry
+from mcpxy_proxy.proxy.base import UpstreamTransport
+from mcpxy_proxy.proxy.manager import UpstreamManager
+from mcpxy_proxy.runtime import RuntimeConfigManager
+from mcpxy_proxy.telemetry.noop_sink import NoopTelemetrySink
+from mcpxy_proxy.telemetry.pipeline import TelemetryPipeline
 
 
 class FailingTransport(UpstreamTransport):
@@ -73,8 +73,8 @@ async def test_apply_rejects_tls_changes() -> None:
     candidate = {
         "tls": {
             "enabled": True,
-            "certfile": "/etc/mcpy/cert.pem",
-            "keyfile": "/etc/mcpy/key.pem",
+            "certfile": "/etc/mcpxy/cert.pem",
+            "keyfile": "/etc/mcpxy/key.pem",
         },
         "upstreams": {"a": {"type": "dummy"}},
     }

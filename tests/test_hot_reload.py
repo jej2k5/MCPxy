@@ -3,13 +3,13 @@ import json
 
 import pytest
 
-from mcp_proxy.config import AppConfig
-from mcp_proxy.plugins.registry import PluginRegistry
-from mcp_proxy.proxy.admin import AdminService
-from mcp_proxy.proxy.manager import UpstreamManager
-from mcp_proxy.runtime import RuntimeConfigManager
+from mcpxy_proxy.config import AppConfig
+from mcpxy_proxy.plugins.registry import PluginRegistry
+from mcpxy_proxy.proxy.admin import AdminService
+from mcpxy_proxy.proxy.manager import UpstreamManager
+from mcpxy_proxy.runtime import RuntimeConfigManager
 
-from mcp_proxy.proxy.base import UpstreamTransport
+from mcpxy_proxy.proxy.base import UpstreamTransport
 
 
 class DummyTransport(UpstreamTransport):
@@ -35,8 +35,8 @@ class DummyTransport(UpstreamTransport):
     def health(self):
         return {"ok": True}
 
-from mcp_proxy.telemetry.noop_sink import NoopTelemetrySink
-from mcp_proxy.telemetry.pipeline import TelemetryPipeline
+from mcpxy_proxy.telemetry.noop_sink import NoopTelemetrySink
+from mcpxy_proxy.telemetry.pipeline import TelemetryPipeline
 
 
 class DummyTelemetry:

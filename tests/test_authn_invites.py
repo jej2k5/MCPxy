@@ -6,8 +6,8 @@ from unittest.mock import MagicMock
 
 from cryptography.fernet import Fernet
 
-from mcp_proxy.authn.users import accept_invite, invite_user
-from mcp_proxy.storage.config_store import open_store
+from mcpxy_proxy.authn.users import accept_invite, invite_user
+from mcpxy_proxy.storage.config_store import open_store
 
 
 def _make_store(tmp_path):

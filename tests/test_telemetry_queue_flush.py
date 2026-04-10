@@ -2,8 +2,8 @@ import asyncio
 
 import pytest
 
-from mcp_proxy.telemetry.base import TelemetrySink
-from mcp_proxy.telemetry.pipeline import TelemetryPipeline
+from mcpxy_proxy.telemetry.base import TelemetrySink
+from mcpxy_proxy.telemetry.pipeline import TelemetryPipeline
 
 
 class CollectSink(TelemetrySink):

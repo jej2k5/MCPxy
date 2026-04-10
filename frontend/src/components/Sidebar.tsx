@@ -44,7 +44,7 @@ export default function Sidebar({ onSignOut, isAdmin }: { onSignOut: () => void;
           M
         </div>
         <div>
-          <div className="text-sm font-semibold text-slate-100">MCPy</div>
+          <div className="text-sm font-semibold text-slate-100">MCPxy</div>
           <div className="text-xs text-slate-400">Admin</div>
         </div>
       </div>
