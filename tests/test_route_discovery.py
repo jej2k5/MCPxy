@@ -18,7 +18,7 @@ class ToolListingTransport(UpstreamTransport):
     async def restart(self):
         return None
 
-    async def request(self, message):
+    async def request(self, message, **kwargs):
         if message.get("method") == "tools/list":
             return {
                 "jsonrpc": "2.0",
@@ -32,7 +32,7 @@ class ToolListingTransport(UpstreamTransport):
             }
         return {"jsonrpc": "2.0", "id": message["id"], "result": None}
 
-    async def send_notification(self, message):
+    async def send_notification(self, message, **kwargs):
         return None
 
     def health(self):
@@ -52,10 +52,10 @@ class FailingToolList(UpstreamTransport):
     async def restart(self):
         return None
 
-    async def request(self, message):
+    async def request(self, message, **kwargs):
         raise RuntimeError("no tools/list")
 
-    async def send_notification(self, message):
+    async def send_notification(self, message, **kwargs):
         return None
 
     def health(self):

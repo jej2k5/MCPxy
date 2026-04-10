@@ -226,7 +226,7 @@ def build_state(config_path: str | None) -> AppState:
     # It must exist before UpstreamManager so HTTP transports with
     # oauth2 auth can reach it through the settings side-channel.
     oauth_manager = OAuthManager(secrets=secrets_manager)
-    manager = UpstreamManager(config.upstreams, registry, oauth_manager=oauth_manager)
+    manager = UpstreamManager(config.upstreams, registry, oauth_manager=oauth_manager, config_store=store)
     bridge = ProxyBridge(manager)
 
     sink_name = config.telemetry.sink

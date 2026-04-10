@@ -6,12 +6,28 @@ import asyncio
 import contextlib
 import json
 import time
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from mcp_proxy.jsonrpc import JsonRpcError, is_notification
 from mcp_proxy.observability.traffic import TrafficRecord
 from mcp_proxy.policy.engine import PolicyEngine
 from mcp_proxy.proxy.manager import UpstreamManager
+
+
+@dataclass(frozen=True)
+class RequestContext:
+    """Per-request context threaded from server → bridge → transport.
+
+    Carries the authenticated principal and the raw incoming bearer
+    token so the token transformation policy can map client identity
+    to upstream credentials.
+    """
+
+    user_id: int | None = None
+    email: str | None = None
+    role: str | None = None
+    incoming_bearer: str | None = None
 
 
 class ProxyBridge:
@@ -104,6 +120,7 @@ class ProxyBridge:
         *,
         request_bytes: int = 0,
         client_ip: str | None = None,
+        context: RequestContext | None = None,
     ) -> dict[str, Any] | None:
         """Forward a message to an upstream."""
         started_at = time.monotonic()
@@ -168,7 +185,7 @@ class ProxyBridge:
                 record_error("proxy_shutting_down")
                 raise self._shutdown_error(message, upstream_name, "shutdown_reject_in_flight")
             if is_notification(message):
-                await upstream.send_notification(message)
+                await upstream.send_notification(message, context=context)
                 self._emit_record(
                     self._build_record(
                         upstream=upstream_name,
@@ -181,7 +198,7 @@ class ProxyBridge:
                 )
                 return None
 
-            request_task = asyncio.create_task(upstream.request(message))
+            request_task = asyncio.create_task(upstream.request(message, context=context))
             shutdown_waiter = asyncio.create_task(self._shutdown_event.wait())
             done, _ = await asyncio.wait({request_task, shutdown_waiter}, return_when=asyncio.FIRST_COMPLETED)
             if shutdown_waiter in done and self._shutdown_event.is_set():

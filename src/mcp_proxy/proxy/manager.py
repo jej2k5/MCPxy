@@ -29,12 +29,14 @@ class UpstreamManager:
         config_upstreams: dict[str, Any],
         registry: PluginRegistry,
         oauth_manager: Any | None = None,
+        config_store: Any | None = None,
     ) -> None:
         self._config_upstreams: dict[str, dict[str, Any]] = {
             name: _as_dict(settings) for name, settings in config_upstreams.items()
         }
         self._registry = registry
         self._oauth_manager = oauth_manager
+        self._config_store = config_store
         self._upstreams: dict[str, UpstreamTransport] = {}
 
     def _instantiate(self, name: str, settings: dict[str, Any]) -> UpstreamTransport:
@@ -50,6 +52,8 @@ class UpstreamManager:
         settings_with_runtime = dict(settings)
         if self._oauth_manager is not None:
             settings_with_runtime["_oauth_manager"] = self._oauth_manager
+        if self._config_store is not None:
+            settings_with_runtime["_config_store"] = self._config_store
         return cls(name, settings_with_runtime)
 
     async def start(self) -> None:

@@ -31,12 +31,12 @@ class TimedDummyTransport(UpstreamTransport):
     async def restart(self) -> None:
         return None
 
-    async def request(self, message):
+    async def request(self, message, **kwargs):
         if message.get("method") == "slow":
             await asyncio.sleep(0.25)
         return {"jsonrpc": "2.0", "id": message["id"], "result": message["method"]}
 
-    async def send_notification(self, message):
+    async def send_notification(self, message, **kwargs):
         self.notifications.append(message)
 
     def health(self):

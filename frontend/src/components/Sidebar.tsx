@@ -1,6 +1,7 @@
 import { NavLink } from "react-router-dom";
 import {
   Activity,
+  ArrowLeftRight,
   Cable,
   Compass,
   Download,
@@ -32,6 +33,7 @@ const items = [
 
 const adminItems = [
   { to: "/users", label: "Users", icon: Users2 },
+  { to: "/token-mappings", label: "Token Mappings", icon: ArrowLeftRight },
 ];
 
 export default function Sidebar({ onSignOut, isAdmin }: { onSignOut: () => void; isAdmin?: boolean }) {

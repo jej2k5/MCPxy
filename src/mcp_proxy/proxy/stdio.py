@@ -114,7 +114,7 @@ class StdioUpstreamTransport(UpstreamTransport):
                 fut.set_result(None)
         self._pending.clear()
 
-    async def request(self, message: dict[str, Any]) -> dict[str, Any] | None:
+    async def request(self, message: dict[str, Any], context: Any = None) -> dict[str, Any] | None:
         if not self._proc or not self._proc.stdin:
             return None
         msg_id = message.get("id")
@@ -128,7 +128,7 @@ class StdioUpstreamTransport(UpstreamTransport):
             await self._proc.stdin.drain()
         return await fut
 
-    async def send_notification(self, message: dict[str, Any]) -> None:
+    async def send_notification(self, message: dict[str, Any], context: Any = None) -> None:
         if not self._proc or not self._proc.stdin:
             return
         async with self._write_lock:

@@ -23,10 +23,10 @@ class FailingTransport(UpstreamTransport):
     async def restart(self):
         return None
 
-    async def request(self, message):
+    async def request(self, message, **kwargs):
         return {"jsonrpc": "2.0", "id": message.get("id"), "result": "ok"}
 
-    async def send_notification(self, message):
+    async def send_notification(self, message, **kwargs):
         return None
 
     def health(self):

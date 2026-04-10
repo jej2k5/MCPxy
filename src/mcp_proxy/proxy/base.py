@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from mcp_proxy.proxy.bridge import RequestContext
 
 
 class UpstreamTransport(ABC):
@@ -22,11 +25,19 @@ class UpstreamTransport(ABC):
         """Restart transport resources."""
 
     @abstractmethod
-    async def request(self, message: dict[str, Any]) -> dict[str, Any] | None:
+    async def request(
+        self,
+        message: dict[str, Any],
+        context: "RequestContext | None" = None,
+    ) -> dict[str, Any] | None:
         """Send request and return response if available."""
 
     @abstractmethod
-    async def send_notification(self, message: dict[str, Any]) -> None:
+    async def send_notification(
+        self,
+        message: dict[str, Any],
+        context: "RequestContext | None" = None,
+    ) -> None:
         """Send a notification without expecting a response."""
 
     @abstractmethod
