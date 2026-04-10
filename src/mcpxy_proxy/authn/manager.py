@@ -7,6 +7,7 @@ third-party ``authy`` package. Everything else talks to ``AuthnManager``.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from authy import (
@@ -28,6 +29,14 @@ from mcpxy_proxy.config import AuthyConfig
 from mcpxy_proxy.storage.config_store import ConfigStore
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class FederatedStartResult:
+    """Data extracted from authy's ``get_auth_url`` JWT."""
+
+    auth_url: str
+    code_verifier: str | None
 
 
 class AuthnManager:
@@ -147,7 +156,7 @@ class AuthnManager:
             "local", {"username": email, "password": password}
         )
 
-    async def start_federated(self, provider_name: str, state: str) -> str:
+    async def start_federated(self, provider_name: str, state: str) -> FederatedStartResult:
         if self._underlying is None:
             raise RuntimeError("auth not configured")
         result = await self._underlying.authenticate(
@@ -155,17 +164,28 @@ class AuthnManager:
         )
         if result.error:
             raise RuntimeError(result.error)
-        # The URL is returned in the token field for get_auth_url action
-        return result.token or ""
+        # authy returns a signed JWT whose payload contains the real
+        # auth_url and a PKCE code_verifier.  Decode it to extract both.
+        token = result.token or ""
+        try:
+            payload = self._underlying.verify_token(token)
+        except Exception:
+            # Fallback: treat the token as a plain URL if it is not a JWT.
+            return FederatedStartResult(auth_url=token, code_verifier=None)
+        auth_url = payload.get("auth_url", "")
+        if not auth_url:
+            raise RuntimeError("authy get_auth_url did not return an auth_url in the JWT payload")
+        return FederatedStartResult(auth_url=auth_url, code_verifier=payload.get("code_verifier"))
 
     async def complete_federated(
-        self, provider_name: str, code: str, state: str
+        self, provider_name: str, code: str, state: str, *, code_verifier: str | None = None
     ) -> AuthResult:
         if self._underlying is None:
             return AuthResult(success=False, error="auth not configured")
-        return await self._underlying.authenticate(
-            provider_name, {"action": "callback", "code": code, "state": state}
-        )
+        params: dict[str, Any] = {"action": "callback", "code": code, "state": state}
+        if code_verifier is not None:
+            params["code_verifier"] = code_verifier
+        return await self._underlying.authenticate(provider_name, params)
 
     def verify(self, token: str) -> dict[str, Any] | None:
         """Verify a JWT and check revocation. Returns payload or None."""
