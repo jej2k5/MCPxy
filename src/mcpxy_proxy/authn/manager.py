@@ -37,6 +37,7 @@ class FederatedStartResult:
 
     auth_url: str
     code_verifier: str | None
+    oauth_state: str | None = None
 
 
 class AuthnManager:
@@ -195,6 +196,7 @@ class AuthnManager:
                             code_verifier=unsigned_payload.get(
                                 "code_verifier"
                             ),
+                            oauth_state=unsigned_payload.get("state"),
                         )
             except Exception:
                 pass
@@ -209,7 +211,11 @@ class AuthnManager:
         auth_url = payload.get("auth_url", "")
         if not auth_url:
             raise RuntimeError("authy get_auth_url did not return an auth_url in the JWT payload")
-        return FederatedStartResult(auth_url=auth_url, code_verifier=payload.get("code_verifier"))
+        return FederatedStartResult(
+            auth_url=auth_url,
+            code_verifier=payload.get("code_verifier"),
+            oauth_state=payload.get("state"),
+        )
 
     async def complete_federated(
         self, provider_name: str, code: str, state: str, *, code_verifier: str | None = None
