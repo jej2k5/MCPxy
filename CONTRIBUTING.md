@@ -1,5 +1,8 @@
 # Contributing
 
+See [`docs/development.md`](docs/development.md) for the full development
+environment setup, frontend build loop, and plugin authoring guide.
+
 ## Development Setup
 
 1. Create and activate a virtual environment.
@@ -9,7 +12,7 @@
    ```
 3. Run the proxy locally:
    ```bash
-   mcpxy-proxy --config config.example.json
+   mcpxy-proxy serve --config config.example.json
    ```
 
 ## How to Run Tests
@@ -21,12 +24,16 @@ pytest
 
 ## Required Paths
 
-Keep these paths stable when editing architecture and admin UI assets:
-- `docs/Design.md`
-- `src/mcpxy_proxy/plugins/registry.py`
-- `src/mcpxy_proxy/web/templates/admin.html`
-- `src/mcpxy_proxy/web/static/admin.css`
-- `src/mcpxy_proxy/web/static/admin.js`
+Keep these paths stable when editing architecture and UI assets:
+- `src/mcpxy_proxy/server.py` — FastAPI app factory and all HTTP handlers
+- `src/mcpxy_proxy/config.py` — Pydantic config models (schema changes affect all consumers)
+- `src/mcpxy_proxy/proxy/` — upstream transports and request bridge
+- `src/mcpxy_proxy/policy/` — policy engine and redaction
+- `src/mcpxy_proxy/authn/` — admin authentication (authy integration)
+- `src/mcpxy_proxy/storage/schema.py` — DB schema v2; migrations are additive
+- `src/mcpxy_proxy/plugins/registry.py` — plugin discovery
+- `frontend/src/` — Vite/React dashboard source; build output (`npm run build`) goes to `src/mcpxy_proxy/web/dist/` and must be committed alongside source changes
+- `docs/architecture.md` — primary design reference
 
 ## Targeted Test Commands
 

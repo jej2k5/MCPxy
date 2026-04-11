@@ -23,9 +23,10 @@ restarting anything.
 - **Multi-upstream MCP proxy** — multiplexes JSON-RPC 2.0 MCP traffic to
   many upstreams (stdio subprocesses or HTTP endpoints) behind one URL,
   with precedence-based routing (path > header > in-band > default).
-- **Live dashboard** at `/admin` with 10 pages: Onboarding (first-run
+- **Live dashboard** at `/admin` with 14 pages: Onboarding (first-run
   wizard), Overview, Routes, Traffic, Policies, Browse, Import, Connect,
-  Logs, Config. Ships pre-built, so `pip install` gives you a working UI.
+  Logs, Config, Tokens, TokenMappings, Users, Graph. Ships pre-built, so
+  `pip install` gives you a working UI.
 - **Bundled catalog** of 14 well-known MCP servers — filesystem, git,
   github, gitlab, memory, postgres, sqlite, brave-search, fetch,
   puppeteer, slack, time, everart, sentry — installable with one click.
@@ -46,6 +47,15 @@ restarting anything.
 - **Encrypted secrets store** (Fernet, rotatable) and a DB-backed
   config store — survives restarts, exports cleanly, atomic apply
   with rollback.
+- **Multi-provider admin authentication** via authy (local users, Google,
+  Microsoft 365, generic OIDC, SAML). Supports PAT, session cookie, and
+  JWT bearer; invite-based user management included.
+- **PII/PCI redaction** policy with built-in patterns (email, phone, SSN,
+  card PAN, CVV, expiry) and custom regex. Applied independently to
+  requests and responses at the proxy boundary.
+- **Postgres and MySQL support** — install `mcpxy-proxy[postgres]` or
+  `mcpxy-proxy[mysql]` for production database backends; SQLite works
+  out of the box with no extra dependencies.
 
 ## Quickstart
 
@@ -58,6 +68,9 @@ Open <http://127.0.0.1:8000/admin>. On first run the Onboarding wizard
 generates your admin token, walks you through installing your first MCP
 server from the catalog, and hands you the one-line command to connect
 your first client. That's it.
+
+For production deployments (Docker, TLS, Postgres, auth providers) see
+[`docs/admin-guide.md`](docs/admin-guide.md).
 
 Running from source:
 
@@ -125,9 +138,10 @@ config looks like:
 }
 ```
 
-See [`docs/Design.md`](docs/Design.md) for the full schema, including
-the policy engine, telemetry sinks, admin MCP method reference, plugin
-entry points, and architecture diagrams.
+See [`docs/configuration.md`](docs/configuration.md) for the full config
+reference and [`docs/architecture.md`](docs/architecture.md) for design
+details, including the policy engine, telemetry sinks, plugin entry
+points, and request flow diagrams.
 
 ## Serving HTTPS
 
@@ -257,7 +271,13 @@ through the same atomic apply + rollback pipeline.
 
 ## Learn more
 
-- **Architecture & design:** [`docs/Design.md`](docs/Design.md)
+- **Administrator guide:** [`docs/admin-guide.md`](docs/admin-guide.md) — install, deploy, TLS, auth, day-2 ops
+- **Configuration reference:** [`docs/configuration.md`](docs/configuration.md) — full schema, env vars, worked examples
+- **Authentication setup:** [`docs/auth.md`](docs/auth.md) — authy providers (Google, M365, OIDC, SAML), upstream OAuth
+- **Policy authoring:** [`docs/policies.md`](docs/policies.md) — ACLs, rate limits, PII/PCI redaction, token transforms
+- **Troubleshooting:** [`docs/troubleshooting.md`](docs/troubleshooting.md) — common errors, logs, support bundle
+- **Architecture & design:** [`docs/architecture.md`](docs/architecture.md) — module map, request flow, plugin system
+- **Developer guide:** [`docs/development.md`](docs/development.md) — dev setup, frontend build, writing plugins
 - **Contributing:** [`CONTRIBUTING.md`](CONTRIBUTING.md)
 - **Security policy:** [`SECURITY.md`](SECURITY.md)
 - **Changelog:** [`CHANGELOG.md`](CHANGELOG.md)
