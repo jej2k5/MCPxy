@@ -7,6 +7,7 @@ import logging
 import time
 from typing import Any
 
+from mcpxy_proxy.proxy.http import _root_cause
 from mcpxy_proxy.proxy.manager import UpstreamManager
 
 _LOG = logging.getLogger(__name__)
@@ -91,15 +92,16 @@ class RouteDiscoverer:
             }
             return
         except Exception as exc:
+            detail = _root_cause(exc)
             _LOG.warning(
                 "discovery_failed upstream=%s error=%s",
-                name, exc,
+                name, detail,
                 extra={"upstream": name},
             )
             self._cache[name] = {
                 "updated_at": time.time(),
                 "ok": False,
-                "error": f"{type(exc).__name__}: {exc}",
+                "error": detail,
                 "tools": [],
             }
             return
