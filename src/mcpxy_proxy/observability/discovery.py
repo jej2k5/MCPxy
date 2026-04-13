@@ -79,18 +79,47 @@ class RouteDiscoverer:
         try:
             response = await asyncio.wait_for(upstream.request(probe_message), timeout=5.0)
         except asyncio.TimeoutError:
+            _LOG.warning(
+                "discovery_timeout upstream=%s", name,
+                extra={"upstream": name},
+            )
             self._cache[name] = {
                 "updated_at": time.time(),
                 "ok": False,
-                "error": "timeout",
+                "error": f"tools/list timed out after 5s",
                 "tools": [],
             }
             return
         except Exception as exc:
+            _LOG.warning(
+                "discovery_failed upstream=%s error=%s",
+                name, exc,
+                extra={"upstream": name},
+            )
             self._cache[name] = {
                 "updated_at": time.time(),
                 "ok": False,
-                "error": str(exc),
+                "error": f"{type(exc).__name__}: {exc}",
+                "tools": [],
+            }
+            return
+
+        if response is None:
+            self._cache[name] = {
+                "updated_at": time.time(),
+                "ok": False,
+                "error": "upstream returned no response (process may have crashed)",
+                "tools": [],
+            }
+            return
+
+        if isinstance(response, dict) and "error" in response:
+            rpc_err = response["error"]
+            err_msg = rpc_err.get("message", str(rpc_err)) if isinstance(rpc_err, dict) else str(rpc_err)
+            self._cache[name] = {
+                "updated_at": time.time(),
+                "ok": False,
+                "error": f"JSON-RPC error: {err_msg}",
                 "tools": [],
             }
             return

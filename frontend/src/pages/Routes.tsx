@@ -1,9 +1,79 @@
 import { useEffect, useState } from "react";
 import { RefreshCw, RotateCcw, Trash2 } from "lucide-react";
 import { apiGet, apiPost, apiDelete } from "../api/client";
-import type { RouteSnapshot } from "../api/types";
+import type { LogEntry, RouteSnapshot } from "../api/types";
 import { SectionCard } from "../components/Card";
 import { Badge } from "../components/Badge";
+
+function levelColor(level: string): string {
+  switch (level) {
+    case "ERROR": return "text-err";
+    case "WARNING": return "text-warn";
+    case "DEBUG": return "text-slate-500";
+    default: return "text-slate-300";
+  }
+}
+
+function UpstreamLogs({ name }: { name: string }) {
+  const [logs, setLogs] = useState<LogEntry[] | null>(null);
+  const [open, setOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function load() {
+    try {
+      const data = await apiGet<LogEntry[]>(
+        `/admin/api/logs?upstream=${encodeURIComponent(name)}`,
+      );
+      setLogs(data.reverse());
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load logs");
+    }
+  }
+
+  function toggle() {
+    const next = !open;
+    setOpen(next);
+    if (next) load();
+  }
+
+  return (
+    <div className="mt-4 text-xs text-slate-400">
+      <button
+        className="cursor-pointer select-none hover:text-slate-200"
+        onClick={toggle}
+      >
+        {open ? "\u25BC" : "\u25B6"} Logs
+        {logs !== null && ` (${logs.length})`}
+      </button>
+      {open && (
+        <div className="mt-2 max-h-60 overflow-auto scroll-thin rounded-md bg-surface-900 p-2">
+          {error && <p className="text-err">{error}</p>}
+          {logs !== null && logs.length === 0 && (
+            <p className="text-slate-500">No log entries for this upstream.</p>
+          )}
+          {logs !== null && logs.length > 0 && (
+            <table className="w-full">
+              <tbody className="font-mono text-[11px]">
+                {logs.map((entry, i) => (
+                  <tr key={i} className="border-t border-surface-700/40 first:border-0">
+                    <td className="w-20 py-0.5 pr-2 text-slate-500 whitespace-nowrap">
+                      {new Date(entry.timestamp * 1000).toLocaleTimeString()}
+                    </td>
+                    <td className={`w-14 py-0.5 pr-2 ${levelColor(entry.level)}`}>
+                      {entry.level}
+                    </td>
+                    <td className="py-0.5 text-slate-200 break-all">{entry.message}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function RoutesPage() {
   const [routes, setRoutes] = useState<RouteSnapshot>({});
@@ -170,6 +240,7 @@ export default function RoutesPage() {
                     </ul>
                   </div>
                 )}
+                <UpstreamLogs name={name} />
                 <details className="mt-4 text-xs text-slate-400">
                   <summary className="cursor-pointer select-none">Raw health</summary>
                   <pre className="mt-2 whitespace-pre-wrap rounded-md bg-surface-900 p-2 font-mono text-[11px]">

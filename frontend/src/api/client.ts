@@ -94,7 +94,14 @@ export async function logout(): Promise<void> {
 async function safeText(res: Response): Promise<string> {
   try {
     const text = await res.text();
-    return text || res.statusText;
+    if (!text) return res.statusText;
+    try {
+      const json = JSON.parse(text);
+      if (typeof json.detail === "string") return json.detail;
+    } catch {
+      // not JSON — use raw text
+    }
+    return text;
   } catch {
     return res.statusText;
   }

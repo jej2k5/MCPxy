@@ -194,7 +194,8 @@ class RuntimeConfigManager:
                     self.telemetry = backup_telemetry
                 if self.policy_engine is not None:
                     self.policy_engine.replace_config(backup_config)
-                return {"applied": False, "error": str(exc), "rolled_back": True, "diff": diff}
+                error_msg = f"{type(exc).__name__}: {exc}"
+                return {"applied": False, "error": error_msg, "rolled_back": True, "diff": diff}
 
     async def _apply_telemetry_if_needed(self, next_config: AppConfig) -> None:
         if self.config.telemetry == next_config.telemetry:
