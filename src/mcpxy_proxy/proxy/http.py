@@ -31,30 +31,43 @@ def _root_cause(exc: BaseException) -> str:
     and sometimes inside ``ExceptionGroup`` when multiple connection
     attempts (e.g. IPv4 + IPv6) all fail.  This unwraps through
     ``__cause__``, ``__context__``, and ``ExceptionGroup.exceptions`` to
-    surface the actual error the operator needs to see.
+    surface the actual errors the operator needs to see.
     """
-    deepest = exc
-    seen: set[int] = {id(exc)}
     current: BaseException | None = exc
+    seen: set[int] = {id(exc)}
     while current is not None:
-        # If this is an ExceptionGroup, drill into the first sub-exception
-        # instead of following __cause__/__context__ (which just points back
-        # at the group wrapper).
+        # ExceptionGroup holds all the per-attempt failures — format each one.
         subs = getattr(current, "exceptions", None)
         if subs:
-            nxt = subs[0]
-        else:
-            nxt = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+            parts: list[str] = []
+            for sub in subs:
+                leaf = _leaf(sub)
+                name = type(leaf).__name__
+                msg = str(leaf)
+                parts.append(f"{name}: {msg}" if name not in msg else msg)
+            return "; ".join(parts)
+        nxt = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
         if nxt is None or id(nxt) in seen:
             break
         seen.add(id(nxt))
-        deepest = nxt
         current = nxt
-    root_msg = str(deepest)
-    root_type = type(deepest).__name__
+    root_msg = str(current)
+    root_type = type(current).__name__
     if root_msg and root_type not in root_msg:
         return f"{root_type}: {root_msg}"
-    return root_msg or f"{root_type}"
+    return root_msg or root_type
+
+
+def _leaf(exc: BaseException) -> BaseException:
+    """Follow __cause__/__context__ to the deepest exception in the chain."""
+    seen: set[int] = {id(exc)}
+    current = exc
+    while True:
+        nxt = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+        if nxt is None or id(nxt) in seen:
+            return current
+        seen.add(id(nxt))
+        current = nxt
 
 
 class HttpUpstreamTransport(UpstreamTransport):
