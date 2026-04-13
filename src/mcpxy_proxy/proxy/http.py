@@ -23,6 +23,31 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _root_cause(exc: BaseException) -> str:
+    """Walk the exception chain to find the most useful root-cause message.
+
+    httpx wraps OS-level errors (ConnectionRefusedError, gaierror, etc.)
+    inside generic ``ConnectError: All connection attempts failed`` layers.
+    This unwraps through ``__cause__`` and ``__context__`` to surface the
+    actual error the operator needs to see.
+    """
+    deepest = exc
+    seen: set[int] = {id(exc)}
+    current: BaseException | None = exc
+    while current is not None:
+        nxt = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+        if nxt is None or id(nxt) in seen:
+            break
+        seen.add(id(nxt))
+        deepest = nxt
+        current = nxt
+    root_msg = str(deepest)
+    root_type = type(deepest).__name__
+    if root_msg and root_type not in root_msg:
+        return f"{root_type}: {root_msg}"
+    return root_msg or f"{root_type}"
+
+
 class HttpUpstreamTransport(UpstreamTransport):
     """JSON-RPC transport over HTTP POST.
 
@@ -281,10 +306,11 @@ class HttpUpstreamTransport(UpstreamTransport):
             else:
                 resp = await self._client.post(self.url, json=message)
         except (httpx.HTTPError, httpx.StreamError) as exc:
-            self._last_error = f"{type(exc).__name__}: {exc}"
+            detail = _root_cause(exc)
+            self._last_error = detail
             logger.warning(
                 "request_failed upstream=%s url=%s error=%s",
-                self.name, self.url, exc,
+                self.name, self.url, detail,
                 extra={"upstream": self.name},
             )
             raise
@@ -309,10 +335,11 @@ class HttpUpstreamTransport(UpstreamTransport):
             else:
                 await self._client.post(self.url, json=message)
         except (httpx.HTTPError, httpx.StreamError) as exc:
-            self._last_error = f"{type(exc).__name__}: {exc}"
+            detail = _root_cause(exc)
+            self._last_error = detail
             logger.warning(
                 "notification_failed upstream=%s url=%s error=%s",
-                self.name, self.url, exc,
+                self.name, self.url, detail,
                 extra={"upstream": self.name},
             )
             raise
