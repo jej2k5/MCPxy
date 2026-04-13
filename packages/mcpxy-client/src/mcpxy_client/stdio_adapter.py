@@ -1,0 +1,1 @@
+../../../../src/mcpxy_proxy/stdio_adapter.py
