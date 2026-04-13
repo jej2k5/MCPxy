@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 from mcpxy_proxy.plugins.registry import PluginRegistry
 from mcpxy_proxy.proxy.base import UpstreamTransport
@@ -59,9 +62,11 @@ class UpstreamManager:
     async def start(self) -> None:
         """Start all configured upstream transports."""
         for name, settings in self._config_upstreams.items():
+            logger.info("starting upstream=%s type=%s", name, settings.get("type"))
             transport = self._instantiate(name, settings)
             await transport.start()
             self._upstreams[name] = transport
+        logger.info("all_upstreams_started count=%d", len(self._upstreams))
 
     async def stop(self) -> None:
         """Stop all upstreams."""
@@ -84,6 +89,11 @@ class UpstreamManager:
             for name in next_upstreams
             if name in current_config and current_config[name] != next_upstreams[name]
         ]
+        if to_add or to_remove or to_restart:
+            logger.info(
+                "apply_diff adding=%s removing=%s restarting=%s",
+                to_add, to_remove, to_restart,
+            )
 
         started_new: dict[str, UpstreamTransport] = {}
         stopped_previous: dict[str, UpstreamTransport] = {}
@@ -109,6 +119,10 @@ class UpstreamManager:
             self._config_upstreams = {name: dict(settings) for name, settings in next_upstreams.items()}
             return {"added": to_add, "removed": to_remove, "restarted": to_restart}
         except Exception:
+            logger.error(
+                "apply_diff_failed rolling_back added=%s removed=%s restarted=%s",
+                list(started_new.keys()), to_remove, to_restart,
+            )
             for upstream in started_new.values():
                 try:
                     await upstream.stop()
@@ -132,7 +146,9 @@ class UpstreamManager:
         """Restart named upstream if it exists."""
         upstream = self._upstreams.get(name)
         if not upstream:
+            logger.warning("restart_unknown upstream=%s", name)
             return False
+        logger.info("restart_upstream upstream=%s", name)
         await upstream.restart()
         return True
 
