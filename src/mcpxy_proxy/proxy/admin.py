@@ -98,7 +98,11 @@ class AdminService:
         level = params.get("level")
         out = list(self.log_buffer)
         if upstream:
-            out = [item for item in out if item.get("upstream") == upstream]
+            out = [
+                item for item in out
+                if item.get("upstream") == upstream
+                or upstream in (item.get("message") or "")
+            ]
         if level:
             out = [item for item in out if item.get("level") == str(level).upper()]
         return out
