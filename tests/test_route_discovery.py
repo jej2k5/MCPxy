@@ -89,5 +89,5 @@ async def test_discoverer_records_error_on_failure() -> None:
     await disc.refresh_now()
     snap = disc.snapshot()
     assert snap["a"]["discovery"]["ok"] is False
-    assert snap["a"]["discovery"]["error"] == "no tools/list"
+    assert snap["a"]["discovery"]["error"] == "RuntimeError: no tools/list"
     assert snap["a"]["discovery"]["tools"] == []
