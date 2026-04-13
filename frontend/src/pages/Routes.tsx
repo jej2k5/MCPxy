@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { RefreshCw, RotateCcw } from "lucide-react";
-import { apiGet, apiPost } from "../api/client";
+import { RefreshCw, RotateCcw, Trash2 } from "lucide-react";
+import { apiGet, apiPost, apiDelete } from "../api/client";
 import type { RouteSnapshot } from "../api/types";
 import { SectionCard } from "../components/Card";
 import { Badge } from "../components/Badge";
@@ -45,6 +45,19 @@ export default function RoutesPage() {
       await refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Restart failed");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function remove(name: string) {
+    if (!confirm(`Remove upstream '${name}'? It will be unregistered and its process stopped.`)) return;
+    setBusy(name);
+    try {
+      await apiDelete(`/admin/api/upstreams/${encodeURIComponent(name)}`);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Remove failed");
     } finally {
       setBusy(null);
     }
@@ -104,15 +117,25 @@ export default function RoutesPage() {
                       {discoveryOk === false && <Badge tone="warn">discovery failed</Badge>}
                     </div>
                   </div>
-                  <button
-                    className="btn"
-                    onClick={() => restart(name)}
-                    disabled={busy === name}
-                    title="Restart upstream"
-                  >
-                    <RotateCcw className={`h-4 w-4 ${busy === name ? "animate-spin" : ""}`} />
-                    Restart
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      className="btn"
+                      onClick={() => restart(name)}
+                      disabled={busy === name}
+                      title="Restart upstream"
+                    >
+                      <RotateCcw className={`h-4 w-4 ${busy === name ? "animate-spin" : ""}`} />
+                      Restart
+                    </button>
+                    <button
+                      className="text-slate-500 hover:text-err"
+                      onClick={() => remove(name)}
+                      disabled={busy === name}
+                      title="Remove upstream"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </div>
                 </div>
                 {tools.length > 0 && (
                   <div className="mt-4">
