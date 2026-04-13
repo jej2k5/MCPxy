@@ -105,6 +105,11 @@ class RouteDiscoverer:
             return
 
         if response is None:
+            _LOG.warning(
+                "discovery_no_response upstream=%s (process may have crashed)",
+                name,
+                extra={"upstream": name},
+            )
             self._cache[name] = {
                 "updated_at": time.time(),
                 "ok": False,
@@ -116,6 +121,11 @@ class RouteDiscoverer:
         if isinstance(response, dict) and "error" in response:
             rpc_err = response["error"]
             err_msg = rpc_err.get("message", str(rpc_err)) if isinstance(rpc_err, dict) else str(rpc_err)
+            _LOG.warning(
+                "discovery_rpc_error upstream=%s error=%s",
+                name, err_msg,
+                extra={"upstream": name},
+            )
             self._cache[name] = {
                 "updated_at": time.time(),
                 "ok": False,
