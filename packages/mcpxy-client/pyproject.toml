@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcpxy-client"
+version = "0.1.0"
+description = "Lightweight CLI to register MCPxy as an MCP server in AI clients (Claude Desktop, ChatGPT, Cursor, etc.)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+  { name = "project maintainers" }
+]
+keywords = ["mcp", "mcpxy", "client", "installer", "claude", "chatgpt"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+]
+dependencies = [
+  "httpx>=0.27.0",
+]
+
+[project.scripts]
+mcpxy-client = "mcpxy_client.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

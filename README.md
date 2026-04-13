@@ -93,6 +93,21 @@ Each command backs up the target client's config and registers MCPxy as
 an MCP server. The dashboard's **Connect** page shows the same commands
 and copy-paste snippets for each client.
 
+### Client-only install (lightweight)
+
+If you only need to register MCPxy with your AI clients — without
+installing the full proxy server on this machine — use the lightweight
+client package:
+
+```bash
+pip install mcpxy-client
+mcpxy-client install --client claude-desktop --url https://proxy.example.com:8000
+```
+
+This installs only `httpx` (~2 MB) instead of the full server stack.
+Useful when the MCPxy proxy runs on a remote server or in Docker and you
+just need to point your local clients at it.
+
 ## Docker
 
 ```bash
