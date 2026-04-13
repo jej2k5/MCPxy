@@ -65,6 +65,7 @@ class HttpUpstreamTransport(UpstreamTransport):
         self._config_store = settings.get("_config_store")
         self._auth_strategy = None  # lazily bound in start()
         self._client: httpx.AsyncClient | None = None
+        self._last_error: str | None = None
 
     # ------------------------------------------------------------------
     # Config normalization
@@ -272,12 +273,22 @@ class HttpUpstreamTransport(UpstreamTransport):
                 "token_mapping_not_found",
                 request_id=message.get("id"),
             )
-        if extra_headers:
-            resp = await self._client.post(
-                self.url, json=message, headers=extra_headers,
+        try:
+            if extra_headers:
+                resp = await self._client.post(
+                    self.url, json=message, headers=extra_headers,
+                )
+            else:
+                resp = await self._client.post(self.url, json=message)
+        except (httpx.HTTPError, httpx.StreamError) as exc:
+            self._last_error = f"{type(exc).__name__}: {exc}"
+            logger.warning(
+                "request_failed upstream=%s url=%s error=%s",
+                self.name, self.url, exc,
+                extra={"upstream": self.name},
             )
-        else:
-            resp = await self._client.post(self.url, json=message)
+            raise
+        self._last_error = None
         if not resp.content:
             return None
         return resp.json()
@@ -292,10 +303,19 @@ class HttpUpstreamTransport(UpstreamTransport):
         extra_headers = self._resolve_transform_headers(context)
         if extra_headers is not None and len(extra_headers) == 0:
             return  # silently drop notification for unmapped user
-        if extra_headers:
-            await self._client.post(self.url, json=message, headers=extra_headers)
-        else:
-            await self._client.post(self.url, json=message)
+        try:
+            if extra_headers:
+                await self._client.post(self.url, json=message, headers=extra_headers)
+            else:
+                await self._client.post(self.url, json=message)
+        except (httpx.HTTPError, httpx.StreamError) as exc:
+            self._last_error = f"{type(exc).__name__}: {exc}"
+            logger.warning(
+                "notification_failed upstream=%s url=%s error=%s",
+                self.name, self.url, exc,
+                extra={"upstream": self.name},
+            )
+            raise
 
     def health(self) -> dict[str, Any]:
         auth_type = "none"
@@ -317,4 +337,5 @@ class HttpUpstreamTransport(UpstreamTransport):
             "auth": auth_type,
             "tls": tls_state,
             "token_transform": token_transform_strategy,
+            "last_error": self._last_error,
         }

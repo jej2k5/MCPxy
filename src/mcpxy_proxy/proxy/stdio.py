@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import random
 from typing import Any
 
 from mcpxy_proxy.proxy.base import UpstreamTransport
+
+logger = logging.getLogger(__name__)
 
 
 class StdioUpstreamTransport(UpstreamTransport):
@@ -34,6 +37,8 @@ class StdioUpstreamTransport(UpstreamTransport):
         self._write_lock = asyncio.Lock()
         self._running = False
         self._restart_attempts = 0
+        self._last_error: str | None = None
+        self._stderr_task: asyncio.Task[None] | None = None
 
     async def start(self) -> None:
         await self._spawn()
@@ -47,15 +52,30 @@ class StdioUpstreamTransport(UpstreamTransport):
         return merged
 
     async def _spawn(self) -> None:
-        self._proc = await asyncio.create_subprocess_exec(
-            self.command,
-            *self.args,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=self._build_env(),
+        try:
+            self._proc = await asyncio.create_subprocess_exec(
+                self.command,
+                *self.args,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=self._build_env(),
+            )
+        except (FileNotFoundError, PermissionError, OSError) as exc:
+            self._last_error = str(exc)
+            logger.error(
+                "spawn_failed upstream=%s command=%s error=%s",
+                self.name, self.command, exc,
+                extra={"upstream": self.name},
+            )
+            raise
+        logger.info(
+            "spawned upstream=%s pid=%d command=%s",
+            self.name, self._proc.pid, self.command,
+            extra={"upstream": self.name},
         )
         self._reader_task = asyncio.create_task(self._reader())
+        self._stderr_task = asyncio.create_task(self._stderr_reader())
 
     async def stop(self) -> None:
         self._running = False
@@ -64,6 +84,11 @@ class StdioUpstreamTransport(UpstreamTransport):
             with contextlib.suppress(asyncio.CancelledError):
                 await self._reader_task
             self._reader_task = None
+        if self._stderr_task:
+            self._stderr_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._stderr_task
+            self._stderr_task = None
 
         self._flush_pending()
 
@@ -88,10 +113,19 @@ class StdioUpstreamTransport(UpstreamTransport):
     async def _maybe_restart(self) -> None:
         if not self._running:
             return
+        exit_code = self._proc.returncode if self._proc else None
         self._restart_attempts += 1
         delay = min(5.0, 0.1 * (2**self._restart_attempts)) + random.random() * 0.1
+        logger.warning(
+            "restarting upstream=%s exit_code=%s attempt=%d delay=%.2fs last_error=%s",
+            self.name, exit_code, self._restart_attempts, delay, self._last_error,
+            extra={"upstream": self.name},
+        )
         await asyncio.sleep(delay)
-        await self._spawn()
+        try:
+            await self._spawn()
+        except Exception:
+            pass  # _spawn already logged; next reader EOF will retry
 
     async def _reader(self) -> None:
         assert self._proc and self._proc.stdout
@@ -101,12 +135,35 @@ class StdioUpstreamTransport(UpstreamTransport):
                 self._flush_pending()
                 await self._maybe_restart()
                 return
-            msg = json.loads(line.decode("utf-8"))
+            try:
+                msg = json.loads(line.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                logger.warning(
+                    "invalid_json upstream=%s error=%s line=%r",
+                    self.name, exc, line[:200],
+                    extra={"upstream": self.name},
+                )
+                continue
             msg_id = msg.get("id")
             if msg_id in self._pending:
                 fut = self._pending.pop(msg_id)
                 if not fut.done():
                     fut.set_result(msg)
+
+    async def _stderr_reader(self) -> None:
+        """Drain subprocess stderr and log each line."""
+        assert self._proc and self._proc.stderr
+        while True:
+            line = await self._proc.stderr.readline()
+            if not line:
+                return
+            text = line.decode("utf-8", errors="replace").rstrip()
+            self._last_error = text
+            logger.warning(
+                "upstream_stderr upstream=%s line=%s",
+                self.name, text,
+                extra={"upstream": self.name},
+            )
 
     def _flush_pending(self) -> None:
         for fut in self._pending.values():
@@ -141,4 +198,5 @@ class StdioUpstreamTransport(UpstreamTransport):
             "running": bool(self._proc and self._proc.returncode is None),
             "restart_attempts": self._restart_attempts,
             "pending_requests": len(self._pending),
+            "last_error": self._last_error,
         }
