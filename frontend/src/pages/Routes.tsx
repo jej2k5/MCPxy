@@ -95,14 +95,15 @@ export default function RoutesPage() {
       ) : (
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
           {entries.map(([name, info]) => {
-            const transport = (info.health as Record<string, unknown>)?.type as
-              | string
-              | undefined;
+            const health = info.health as Record<string, unknown>;
+            const transport = health?.type as string | undefined;
             const healthOk =
-              (info.health as Record<string, unknown>)?.status === "ok" ||
-              (info.health as Record<string, unknown>)?.running === true;
+              health?.status === "ok" || health?.running === true;
             const tools = info.discovery?.tools ?? [];
             const discoveryOk = info.discovery?.ok;
+            const lastError = (health?.last_error as string) || null;
+            const discoveryError = (info.discovery?.error as string) || null;
+            const restartAttempts = (health?.restart_attempts as number) || 0;
             return (
               <div key={name} className="card card-hover">
                 <div className="flex items-start justify-between">
@@ -115,6 +116,9 @@ export default function RoutesPage() {
                       {transport && <Badge>{transport}</Badge>}
                       {discoveryOk === true && <Badge tone="accent">{tools.length} tools</Badge>}
                       {discoveryOk === false && <Badge tone="warn">discovery failed</Badge>}
+                      {restartAttempts > 0 && (
+                        <Badge tone="warn">{restartAttempts} restart{restartAttempts > 1 ? "s" : ""}</Badge>
+                      )}
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
@@ -137,6 +141,18 @@ export default function RoutesPage() {
                     </button>
                   </div>
                 </div>
+                {(lastError || discoveryError) && (
+                  <div className="mt-3 rounded-md border border-err/30 bg-err/5 px-3 py-2">
+                    {lastError && (
+                      <p className="font-mono text-xs text-err break-all">{lastError}</p>
+                    )}
+                    {discoveryError && discoveryError !== lastError && (
+                      <p className="font-mono text-xs text-amber-400 break-all">
+                        discovery: {discoveryError}
+                      </p>
+                    )}
+                  </div>
+                )}
                 {tools.length > 0 && (
                   <div className="mt-4">
                     <div className="mb-2 text-xs uppercase tracking-wider text-slate-400">
