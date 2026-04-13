@@ -1842,6 +1842,23 @@ def create_app(state: AppState, health_path: str = "/health", request_timeout_s:
             raise HTTPException(status_code=400, detail=str(exc))
         if not result.get("applied") and not result.get("dry_run"):
             raise HTTPException(status_code=400, detail=result.get("error", "registration failed"))
+
+        # Post-registration health check: give the process a moment to
+        # start (or crash), then probe it so the caller knows immediately
+        # if something is wrong.
+        if result.get("applied") and name:
+            upstream_name = str(name)
+            await asyncio.sleep(0.5)
+            health = state.manager.health().get(upstream_name, {})
+            await state.route_discovery._probe(upstream_name)
+            discovery = state.route_discovery._cache.get(upstream_name)
+            result["status"] = {"health": health, "discovery": discovery}
+            running = health.get("running") is True or health.get("started") is True
+            if not running:
+                result["warning"] = health.get("last_error") or "upstream process exited immediately after starting"
+            elif discovery and not discovery.get("ok"):
+                result["warning"] = discovery.get("error") or "upstream did not respond to tools/list probe"
+
         return JSONResponse(result)
 
     @app.delete("/admin/api/upstreams/{name}")

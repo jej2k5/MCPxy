@@ -253,6 +253,11 @@ export interface ManualUpstreamResponse {
   applied: boolean;
   diff?: Record<string, unknown>;
   error?: string;
+  warning?: string;
+  status?: {
+    health?: Record<string, unknown>;
+    discovery?: Record<string, unknown>;
+  };
 }
 
 // ---------------------------------------------------------------------------

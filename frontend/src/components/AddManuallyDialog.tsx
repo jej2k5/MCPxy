@@ -99,6 +99,7 @@ export default function AddManuallyDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [replace, setReplace] = useState(false);
 
   const nameValid = NAME_RE.test(name);
@@ -199,6 +200,7 @@ export default function AddManuallyDialog({
   async function submit() {
     setError(null);
     setResult(null);
+    setWarning(null);
     const config = buildPayload();
     if (config === null) {
       setError("could not build upstream payload");
@@ -212,7 +214,12 @@ export default function AddManuallyDialog({
         body,
       );
       if (res.applied) {
-        setResult(`Registered upstream '${name}'.`);
+        if (res.warning) {
+          setResult(`Registered upstream '${name}', but it may not be working:`);
+          setWarning(res.warning);
+        } else {
+          setResult(`Registered upstream '${name}'.`);
+        }
         onInstalled(name);
       } else {
         setError(res.error || "registration returned applied=false");
@@ -515,6 +522,11 @@ export default function AddManuallyDialog({
         {error && (
           <div className="rounded-lg border border-err/40 bg-err/10 px-3 py-2 text-sm text-err">
             {error}
+          </div>
+        )}
+        {warning && (
+          <div className="rounded-lg border border-warn/40 bg-warn/10 px-3 py-2 text-sm text-warn font-mono break-all">
+            {warning}
           </div>
         )}
         {result && (
