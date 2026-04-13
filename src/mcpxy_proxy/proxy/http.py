@@ -27,15 +27,24 @@ def _root_cause(exc: BaseException) -> str:
     """Walk the exception chain to find the most useful root-cause message.
 
     httpx wraps OS-level errors (ConnectionRefusedError, gaierror, etc.)
-    inside generic ``ConnectError: All connection attempts failed`` layers.
-    This unwraps through ``__cause__`` and ``__context__`` to surface the
-    actual error the operator needs to see.
+    inside generic ``ConnectError: All connection attempts failed`` layers,
+    and sometimes inside ``ExceptionGroup`` when multiple connection
+    attempts (e.g. IPv4 + IPv6) all fail.  This unwraps through
+    ``__cause__``, ``__context__``, and ``ExceptionGroup.exceptions`` to
+    surface the actual error the operator needs to see.
     """
     deepest = exc
     seen: set[int] = {id(exc)}
     current: BaseException | None = exc
     while current is not None:
-        nxt = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
+        # If this is an ExceptionGroup, drill into the first sub-exception
+        # instead of following __cause__/__context__ (which just points back
+        # at the group wrapper).
+        subs = getattr(current, "exceptions", None)
+        if subs:
+            nxt = subs[0]
+        else:
+            nxt = getattr(current, "__cause__", None) or getattr(current, "__context__", None)
         if nxt is None or id(nxt) in seen:
             break
         seen.add(id(nxt))
